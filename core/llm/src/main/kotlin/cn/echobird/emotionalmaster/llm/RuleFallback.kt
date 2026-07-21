@@ -7,7 +7,7 @@ class RuleFallback {
     fun suggestions(): ReplySuggestionSet = ReplySuggestionSet.of(
         listOf(
             suggestion(
-                text = "听起来这件事对你挺重要的，愿意多说一点吗？",
+                text = "这件事对你很重要。想再说说吗？",
                 strategy = "共情倾听",
                 intent = "先确认对方感受并邀请补充",
                 risk = "避免替对方定义情绪",
