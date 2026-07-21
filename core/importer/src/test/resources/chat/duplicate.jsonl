@@ -1,0 +1,3 @@
+{"id":"wechat:message:1","senderId":"peer","sentAt":"2026-07-20T10:00:00+08:00","text":"你好"}
+{"id":"wechat:message:duplicate","senderId":"peer","sentAt":"2026-07-20T10:00:00+08:00","text":"你好"}
+{"id":"wechat:message:2","senderId":"self","sentAt":"2026-07-20T10:01:00+08:00","text":"收到"}
