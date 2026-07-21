@@ -2,6 +2,15 @@
 
 一个本地优先的 Android 聊天记录分析 MVP。当前版本支持 JSON/JSONL 文件预览、身份映射、加密导入、可复算统计、脱敏上下文确认，以及 4 条可复制的回复策略。
 
+## 项目状态
+
+- 基础 MVP 已完成，并已通过单元测试、lint、Debug APK 构建和 Android 模拟器流程测试。
+- 当前开发分支为 `feature/mvp-foundation`，首期实现尚未合并到 `main`。
+- 下一阶段计划进行非 Root 数据采集能力的方案设计，包括无障碍按需采集和 MediaProjection/OCR 回退。
+- UI 现阶段以流程可用和文字可读为目标，功能稳定后再迭代视觉细节。
+
+当前完成情况、后续任务、开发约束和多设备协作方式见 [开发状态与下一步](docs/development/status-and-next-steps.md)，整体交付顺序见 [Android 总路线图](docs/superpowers/plans/2026-07-20-emotional-master-roadmap.md)。
+
 ## 隐私边界
 
 - 文件通过 Android Storage Access Framework 只读打开，确认前不写入资料库。
