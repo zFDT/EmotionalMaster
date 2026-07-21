@@ -3,9 +3,13 @@ package cn.echobird.emotionalmaster.storage
 import android.content.Context
 import androidx.room.Room
 import cn.echobird.emotionalmaster.importer.StagedImportBatch
+import cn.echobird.emotionalmaster.importer.ChatImportFormat
+import cn.echobird.emotionalmaster.importer.IdentityMapping
+import cn.echobird.emotionalmaster.importer.JsonChatParser
 import cn.echobird.emotionalmaster.model.ChatMessage
 import cn.echobird.emotionalmaster.model.MessageDirection
 import java.time.Instant
+import java.io.ByteArrayInputStream
 import java.util.UUID
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -62,6 +66,23 @@ class ImportRepositoryTest {
         assertEquals(ImportOutcome.ALREADY_IMPORTED, repository.importBatch("peer:1", batch))
         assertEquals(1, database.chatDao().messageCount())
         assertEquals(1, database.chatDao().importBatchCount())
+    }
+
+    @Test
+    fun `包含错误行的解析批次拒绝写入`() {
+        val content = """
+            {"id":"message:1","senderId":"peer","sentAt":"2026-07-20T10:00:00Z","text":"你好"}
+            {not-json}
+        """.trimIndent()
+        val stagedBatch = JsonChatParser().parse(
+            ByteArrayInputStream(content.toByteArray()),
+            ChatImportFormat.JSONL,
+            IdentityMapping("self", "peer"),
+        )
+
+        assertEquals(ImportOutcome.REJECTED, repository.importBatch("peer:1", stagedBatch))
+        assertEquals(0, database.chatDao().messageCount())
+        assertEquals(0, database.chatDao().importBatchCount())
     }
 
     @Test

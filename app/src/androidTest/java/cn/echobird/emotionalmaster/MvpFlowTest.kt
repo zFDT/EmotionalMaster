@@ -72,6 +72,10 @@ class MvpFlowTest {
         composeRule.onNodeWithTag("current-message").performImeAction()
         composeRule.waitForIdle()
         pressBack()
+        composeRule.waitForIdle()
+        if (composeRule.onAllNodesWithText("相处节奏").fetchSemanticsNodes().isEmpty()) {
+            pressBack()
+        }
         composeRule.onNodeWithText("相处节奏").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("获取回复建议").performScrollTo().performClick()
         composeRule.onNodeWithTag("current-message").assertTextContains("你最近怎么总是这么忙？")
