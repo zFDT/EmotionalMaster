@@ -7,9 +7,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import cn.echobird.emotionalmaster.llm.ContextRedactor
 import cn.echobird.emotionalmaster.llm.ConversationRole
+import cn.echobird.emotionalmaster.llm.OnlineFailure
+import cn.echobird.emotionalmaster.llm.OnlineSuccess
 import cn.echobird.emotionalmaster.llm.ReplySuggestionService
 import cn.echobird.emotionalmaster.llm.RuleFallback
-import cn.echobird.emotionalmaster.llm.SuggestionMode
 import cn.echobird.emotionalmaster.model.ChatMessage
 import cn.echobird.emotionalmaster.model.MessageDirection
 import cn.echobird.emotionalmaster.model.ReplySuggestion
@@ -81,13 +82,31 @@ class ReplyViewModel(
             runCatching {
                 withContext(Dispatchers.IO) { service?.suggest(requestMessages()) }
             }.onSuccess { result ->
-                val suggestions = result?.suggestions ?: fallback.suggestions()
-                uiState = uiState.copy(
-                    showContextPreview = false,
-                    suggestions = suggestions.suggestions,
-                    isOfflineFallback = result == null || result.mode == SuggestionMode.OFFLINE_FALLBACK,
-                    isGenerating = false,
-                )
+                uiState = when (result) {
+                    null -> {
+                        val suggestions = fallback.suggestions()
+                        uiState.copy(
+                            showContextPreview = false,
+                            suggestions = suggestions.suggestions,
+                            isOfflineFallback = true,
+                            isGenerating = false,
+                        )
+                    }
+
+                    is OnlineSuccess -> uiState.copy(
+                        showContextPreview = false,
+                        suggestions = result.suggestions.suggestions,
+                        isOfflineFallback = false,
+                        isGenerating = false,
+                    )
+
+                    is OnlineFailure -> uiState.copy(
+                        showContextPreview = false,
+                        isOfflineFallback = false,
+                        isGenerating = false,
+                        generationError = result.message,
+                    )
+                }
             }.onFailure { error ->
                 uiState = uiState.copy(
                     isGenerating = false,

@@ -11,25 +11,34 @@ import kotlinx.serialization.json.jsonPrimitive
 
 enum class SuggestionMode {
     ONLINE,
+    ONLINE_FAILURE,
     OFFLINE_FALLBACK,
 }
 
 sealed interface ReplySuggestionResult {
+    @Deprecated("任务 6 后请按 ReplySuggestionResult 的 sealed 子类型穷尽处理。")
     val suggestions: ReplySuggestionSet?
+
+    @Deprecated("任务 6 后请按 ReplySuggestionResult 的 sealed 子类型穷尽处理。")
     val mode: SuggestionMode
 }
 
 data class OnlineSuccess(
+    @Suppress("OVERRIDE_DEPRECATION")
     override val suggestions: ReplySuggestionSet,
 ) : ReplySuggestionResult {
+    @Suppress("OVERRIDE_DEPRECATION")
     override val mode = SuggestionMode.ONLINE
 }
 
 data class OnlineFailure(
     val message: String,
 ) : ReplySuggestionResult {
+    @Suppress("OVERRIDE_DEPRECATION")
     override val suggestions: ReplySuggestionSet? = null
-    override val mode = SuggestionMode.OFFLINE_FALLBACK
+
+    @Suppress("OVERRIDE_DEPRECATION")
+    override val mode = SuggestionMode.ONLINE_FAILURE
 }
 
 class ReplySuggestionService(

@@ -17,6 +17,7 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+@Suppress("DEPRECATION")
 class ReplySuggestionServiceTest {
     private var server: HttpServer? = null
 
@@ -26,15 +27,15 @@ class ReplySuggestionServiceTest {
     }
 
     @Test
-    fun `合法结构返回四到六条 OnlineSuccess`() {
-        val provider = FakeProvider(validSuggestionsJson(4))
+    fun `合法结构返回六条 OnlineSuccess`() {
+        val provider = FakeProvider(validSuggestionsJson(6))
 
         val result = ReplySuggestionService(provider).suggest(listOf(message("最近怎么样？")))
 
         assertTrue(result is OnlineSuccess)
         assertEquals(SuggestionMode.ONLINE, result.mode)
-        assertEquals(4, result.suggestions!!.suggestions.size)
-        assertEquals(4, result.suggestions!!.suggestions.map { it.strategy }.distinct().size)
+        assertEquals(6, result.suggestions!!.suggestions.size)
+        assertEquals(6, result.suggestions!!.suggestions.map { it.strategy }.distinct().size)
         assertFalse(provider.lastRequest!!.context.messages.single().text.contains("message-id"))
     }
 
@@ -75,7 +76,10 @@ class ReplySuggestionServiceTest {
             402 to "DeepSeek 账户余额不足",
             422 to "在线请求格式不兼容",
             429 to "DeepSeek 请求过于频繁，请稍后重试",
+            404 to "在线回复暂时不可用",
+            500 to "DeepSeek 服务暂时不可用",
             503 to "DeepSeek 服务暂时不可用",
+            599 to "DeepSeek 服务暂时不可用",
         )
 
         expectedMessages.forEach { (statusCode, message) ->
@@ -97,6 +101,15 @@ class ReplySuggestionServiceTest {
 
             assertOnlineFailure(result, message)
         }
+    }
+
+    @Test
+    fun `Provider 格式错误返回在线回复格式无效`() {
+        val result = ReplySuggestionService(
+            FakeProvider(failure = ModelProviderException.MalformedResponse(IllegalArgumentException("secret"))),
+        ).suggest(listOf(message("你好")))
+
+        assertOnlineFailure(result, "在线回复格式无效")
     }
 
     @Test
@@ -237,7 +250,7 @@ class ReplySuggestionServiceTest {
 
     private fun assertOnlineFailure(result: ReplySuggestionResult, expectedMessage: String) {
         assertTrue(result is OnlineFailure)
-        assertEquals(SuggestionMode.OFFLINE_FALLBACK, result.mode)
+        assertEquals(SuggestionMode.ONLINE_FAILURE, result.mode)
         assertEquals(expectedMessage, (result as OnlineFailure).message)
         assertNull(result.suggestions)
     }
