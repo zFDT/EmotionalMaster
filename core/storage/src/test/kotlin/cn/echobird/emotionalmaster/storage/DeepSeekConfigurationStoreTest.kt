@@ -75,16 +75,21 @@ class DeepSeekConfigurationStoreTest {
     }
 
     @Test
-    fun `空 modelId 或 apiKey 被拒绝且不会调用加密`() {
-        assertThrows(ConfigurationStoreException::class.java) {
-            store.save(DeepSeekConfiguration("", "key"))
+    fun `空或空白 modelId 在构造配置时被拒绝`() {
+        listOf("", "   ").forEach { modelId ->
+            assertThrows(IllegalArgumentException::class.java) {
+                DeepSeekConfiguration(modelId, "key")
+            }
         }
-        assertThrows(ConfigurationStoreException::class.java) {
-            store.save(DeepSeekConfiguration("model", ""))
-        }
+    }
 
-        assertEquals(0, cipher.encryptCalls)
-        assertNull(store.load())
+    @Test
+    fun `空或空白 apiKey 在构造配置时被拒绝`() {
+        listOf("", "   ").forEach { apiKey ->
+            assertThrows(IllegalArgumentException::class.java) {
+                DeepSeekConfiguration("model", apiKey)
+            }
+        }
     }
 
     @Test

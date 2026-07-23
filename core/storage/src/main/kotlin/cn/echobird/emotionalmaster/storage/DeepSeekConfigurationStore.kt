@@ -18,7 +18,12 @@ import javax.crypto.spec.GCMParameterSpec
 data class DeepSeekConfiguration(
     val modelId: String,
     val apiKey: String,
-)
+) {
+    init {
+        require(modelId.isNotBlank()) { "DeepSeek 模型标识不能为空" }
+        require(apiKey.isNotBlank()) { "DeepSeek API Key 不能为空" }
+    }
+}
 
 interface DeepSeekConfigurationStore {
     fun load(): DeepSeekConfiguration?
@@ -105,7 +110,7 @@ class SharedPreferencesDeepSeekConfigurationStore private constructor(
     }
 
     override fun save(configuration: DeepSeekConfiguration) {
-        if (configuration.modelId.isEmpty() || configuration.apiKey.isEmpty()) {
+        if (configuration.modelId.isNotBlank().not() || configuration.apiKey.isNotBlank().not()) {
             throw saveFailure()
         }
 
