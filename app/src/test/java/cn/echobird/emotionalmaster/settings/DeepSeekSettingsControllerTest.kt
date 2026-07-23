@@ -9,9 +9,11 @@ import cn.echobird.emotionalmaster.storage.DeepSeekConfigurationStore
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CancellationException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -189,6 +191,34 @@ class DeepSeekSettingsControllerTest {
     }
 
     @Test
+    fun `取消验证立即丢弃旧候选并且不得保存`() {
+        val store = FakeStore(configuration = DeepSeekConfiguration("saved-model", "saved-secret"))
+        val controller = DeepSeekSettingsController(store, FirstSuccessThenCancelledCatalog())
+        controller.verifyAndLoadModels("first-candidate-secret")
+
+        assertTrue(controller.state.canSave)
+        controller.beginVerification()
+
+        assertTrue(controller.state.models.isEmpty())
+        assertEquals("saved-model", controller.state.selectedModelId)
+        assertFalse(controller.state.canSave)
+        assertThrows(CancellationException::class.java) {
+            controller.verifyAndLoadModels("second-candidate-secret")
+        }
+
+        assertTrue(controller.state.hasSavedConfiguration)
+        assertEquals("saved-model", controller.state.configuredModelId)
+        assertTrue(controller.state.models.isEmpty())
+        assertEquals("saved-model", controller.state.selectedModelId)
+        assertFalse(controller.state.isLoading)
+        assertFalse(controller.state.canSave)
+        controller.selectModel("first-model")
+        controller.saveVerifiedConfiguration()
+        assertEquals(0, store.saveCalls)
+        assertSecretIsNotObservable(controller)
+    }
+
+    @Test
     fun `保存失败保留旧配置元数据并清除验证密钥`() {
         val store = FakeStore(
             configuration = DeepSeekConfiguration("old-model", "saved-secret"),
@@ -349,6 +379,15 @@ class DeepSeekSettingsControllerTest {
                 check(releaseFirstCall.await(1, TimeUnit.SECONDS))
             }
             return listOf(AvailableModel("model", isDeprecated = false))
+        }
+    }
+
+    private class FirstSuccessThenCancelledCatalog : ModelCatalog {
+        private var calls = 0
+
+        override fun listModels(apiKey: String): List<AvailableModel> = when (++calls) {
+            1 -> listOf(AvailableModel("first-model", isDeprecated = false))
+            else -> throw CancellationException("cancel-secret")
         }
     }
 }

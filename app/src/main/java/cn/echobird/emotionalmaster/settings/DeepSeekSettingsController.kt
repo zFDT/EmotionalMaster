@@ -209,7 +209,12 @@ class DeepSeekSettingsController(
         if (state.isLoading || (requireVerifiedConfiguration && !hasVerifiedConfiguration())) return false
 
         pendingOperation = operation
+        if (operation == Operation.VERIFICATION) {
+            verifiedApiKey = null
+        }
         state = state.copy(
+            models = if (operation == Operation.VERIFICATION) emptyList() else state.models,
+            selectedModelId = if (operation == Operation.VERIFICATION) state.configuredModelId else state.selectedModelId,
             isLoading = true,
             canSave = false,
             errorMessage = null,
