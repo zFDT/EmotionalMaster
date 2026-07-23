@@ -143,6 +143,22 @@ class DeepSeekModelCatalogTest {
     }
 
     @Test
+    fun `响应头已返回后读取 body 超时仍被分类`() {
+        server = serverResponding(
+            status = 200,
+            body = modelsResponse("deepseek-v4-pro"),
+            bodyDelayMillis = 200,
+        )
+        val client = OkHttpClient.Builder()
+            .readTimeout(50, TimeUnit.MILLISECONDS)
+            .build()
+
+        assertThrows(ModelCatalogException.Timeout::class.java) {
+            catalogFor(server!!, client).listModels("test-api-key")
+        }
+    }
+
+    @Test
     fun `网络 IO 异常被分类为传输错误`() {
         val client = OkHttpClient.Builder()
             .addInterceptor { throw IOException("network-secret") }
@@ -198,6 +214,7 @@ class DeepSeekModelCatalogTest {
         status: Int,
         body: String,
         delayMillis: Long = 0,
+        bodyDelayMillis: Long = 0,
         onRequest: (String, String) -> Unit = { _, _ -> },
     ): HttpServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
         createContext("/models") { exchange ->
@@ -205,6 +222,7 @@ class DeepSeekModelCatalogTest {
             if (delayMillis > 0) Thread.sleep(delayMillis)
             val bytes = body.toByteArray()
             exchange.sendResponseHeaders(status, bytes.size.toLong())
+            if (bodyDelayMillis > 0) Thread.sleep(bodyDelayMillis)
             exchange.responseBody.use { it.write(bytes) }
         }
         start()

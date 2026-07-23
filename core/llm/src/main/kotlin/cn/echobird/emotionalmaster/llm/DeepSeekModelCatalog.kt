@@ -26,17 +26,15 @@ class DeepSeekModelCatalog(
             .get()
             .build()
 
-        val response = try {
-            client.newCall(request).execute()
+        return try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw httpException(response.code)
+                parseModels(response.body.string())
+            }
         } catch (error: SocketTimeoutException) {
             throw ModelCatalogException.Timeout(error)
         } catch (error: IOException) {
             throw ModelCatalogException.Transport(error)
-        }
-
-        response.use {
-            if (!it.isSuccessful) throw httpException(it.code)
-            return parseModels(it.body.string())
         }
     }
 
