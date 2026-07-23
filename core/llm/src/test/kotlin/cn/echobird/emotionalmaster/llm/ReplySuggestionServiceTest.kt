@@ -4,6 +4,7 @@ import cn.echobird.emotionalmaster.model.ChatMessage
 import cn.echobird.emotionalmaster.model.MessageDirection
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
+import java.io.IOException
 import java.net.SocketTimeoutException
 import java.time.Instant
 import java.util.concurrent.TimeUnit
@@ -11,6 +12,7 @@ import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -24,47 +26,98 @@ class ReplySuggestionServiceTest {
     }
 
     @Test
-    fun `合法结构返回四到六条在线建议`() {
+    fun `合法结构返回四到六条 OnlineSuccess`() {
         val provider = FakeProvider(validSuggestionsJson(4))
 
         val result = ReplySuggestionService(provider).suggest(listOf(message("最近怎么样？")))
 
+        assertTrue(result is OnlineSuccess)
         assertEquals(SuggestionMode.ONLINE, result.mode)
-        assertEquals(4, result.suggestions.suggestions.size)
-        assertEquals(4, result.suggestions.suggestions.map { it.strategy }.distinct().size)
+        assertEquals(4, result.suggestions!!.suggestions.size)
+        assertEquals(4, result.suggestions!!.suggestions.map { it.strategy }.distinct().size)
         assertFalse(provider.lastRequest!!.context.messages.single().text.contains("message-id"))
     }
 
     @Test
-    fun `非法 JSON 数量越界或策略重复时统一规则降级`() {
-        val invalidResponses = listOf(
-            "not-json",
+    fun `非法 JSON 返回 OnlineFailure 且没有离线建议`() {
+        val result = ReplySuggestionService(FakeProvider("not-json"))
+            .suggest(listOf(message("你好")))
+
+        assertOnlineFailure(result, "在线回复格式无效")
+    }
+
+    @Test
+    fun `建议数量越界返回 OnlineFailure 且没有离线建议`() {
+        listOf(
             validSuggestionsJson(3),
             validSuggestionsJson(7),
-            validSuggestionsJson(4, duplicateStrategies = true),
-        )
-
-        invalidResponses.forEach { response ->
+        ).forEach { response ->
             val result = ReplySuggestionService(FakeProvider(response))
                 .suggest(listOf(message("你好")))
 
-            assertEquals(SuggestionMode.OFFLINE_FALLBACK, result.mode)
-            assertEquals(4, result.suggestions.suggestions.size)
-            assertEquals(4, result.suggestions.suggestions.map { it.strategy }.distinct().size)
+            assertOnlineFailure(result, "在线回复格式无效")
         }
     }
 
     @Test
-    fun `超时和非成功状态均使用规则降级`() {
+    fun `重复策略返回 OnlineFailure 且没有离线建议`() {
+        val result = ReplySuggestionService(FakeProvider(validSuggestionsJson(4, duplicateStrategies = true)))
+            .suggest(listOf(message("你好")))
+
+        assertOnlineFailure(result, "在线回复格式无效")
+    }
+
+    @Test
+    fun `HTTP 失败返回对应的 OnlineFailure 文案`() {
+        val expectedMessages = mapOf(
+            400 to "在线请求格式不兼容",
+            401 to "DeepSeek API Key 无效",
+            402 to "DeepSeek 账户余额不足",
+            422 to "在线请求格式不兼容",
+            429 to "DeepSeek 请求过于频繁，请稍后重试",
+            503 to "DeepSeek 服务暂时不可用",
+        )
+
+        expectedMessages.forEach { (statusCode, message) ->
+            val result = ReplySuggestionService(FakeProvider(failure = ModelProviderException.HttpFailure(statusCode)))
+                .suggest(listOf(message("你好")))
+
+            assertOnlineFailure(result, message)
+        }
+    }
+
+    @Test
+    fun `超时和传输失败返回对应的 OnlineFailure 文案`() {
         listOf(
-            ModelProviderException.Timeout(SocketTimeoutException("timeout")),
-            ModelProviderException.HttpFailure(503),
-        ).forEach { failure ->
+            ModelProviderException.Timeout(SocketTimeoutException("timeout-secret")) to "连接 DeepSeek 超时",
+            ModelProviderException.TransportFailure(IOException("transport-secret")) to "无法连接 DeepSeek",
+        ).forEach { (failure, message) ->
             val result = ReplySuggestionService(FakeProvider(failure = failure))
                 .suggest(listOf(message("你好")))
 
-            assertEquals(SuggestionMode.OFFLINE_FALLBACK, result.mode)
+            assertOnlineFailure(result, message)
         }
+    }
+
+    @Test
+    fun `未知异常不泄露底层信息`() {
+        val result = ReplySuggestionService(FakeProvider(failure = IllegalStateException("secret")))
+            .suggest(listOf(message("你好")))
+
+        assertOnlineFailure(result, "在线回复暂时不可用")
+        assertFalse((result as OnlineFailure).message.contains("secret"))
+    }
+
+    @Test
+    fun `只有显式调用才返回四条离线建议`() {
+        val service = ReplySuggestionService(FakeProvider(failure = IllegalStateException("secret")))
+
+        val failure = service.suggest(listOf(message("你好")))
+        val offlineSuggestions = service.offlineSuggestions()
+
+        assertOnlineFailure(failure, "在线回复暂时不可用")
+        assertEquals(4, offlineSuggestions.suggestions.size)
+        assertEquals(4, offlineSuggestions.suggestions.map { it.strategy }.distinct().size)
     }
 
     @Test
@@ -180,6 +233,13 @@ class ReplySuggestionServiceTest {
     private fun openAiResponse(content: String): String {
         val escaped = content.replace("\\", "\\\\").replace("\"", "\\\"")
         return """{"choices":[{"message":{"content":"$escaped"}}]}"""
+    }
+
+    private fun assertOnlineFailure(result: ReplySuggestionResult, expectedMessage: String) {
+        assertTrue(result is OnlineFailure)
+        assertEquals(SuggestionMode.OFFLINE_FALLBACK, result.mode)
+        assertEquals(expectedMessage, (result as OnlineFailure).message)
+        assertNull(result.suggestions)
     }
 
     private class FakeProvider(
