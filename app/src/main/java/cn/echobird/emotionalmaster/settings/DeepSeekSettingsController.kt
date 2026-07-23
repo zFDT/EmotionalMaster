@@ -42,12 +42,18 @@ class DeepSeekSettingsController(
     fun beginInitialization(): Long? = begin(Operation.INITIALIZATION)
 
     fun initializeMetadata() {
-        val token = activeTokenFor(Operation.INITIALIZATION) ?: beginInitialization() ?: return
-        initializeMetadata(token)
+        val token = claimActiveToken(Operation.INITIALIZATION) ?: beginInitialization()?.also {
+            claimToken(it, Operation.INITIALIZATION)
+        } ?: return
+        initializeMetadataClaimed(token)
     }
 
     fun initializeMetadata(token: Long) {
-        if (!isActive(token, Operation.INITIALIZATION)) return
+        if (!claimToken(token, Operation.INITIALIZATION)) return
+        initializeMetadataClaimed(token)
+    }
+
+    private fun initializeMetadataClaimed(token: Long) {
         try {
             val configuredModelId = configurationStore.configuredModelId()
             completeInitialization(token, configuredModelId)
@@ -62,11 +68,18 @@ class DeepSeekSettingsController(
     fun beginVerification(): Long? = begin(Operation.VERIFICATION)
 
     fun verifyAndLoadModels(candidateApiKey: String?) {
-        val token = activeTokenFor(Operation.VERIFICATION) ?: beginVerification() ?: return
-        verifyAndLoadModels(candidateApiKey, token)
+        val token = claimActiveToken(Operation.VERIFICATION) ?: beginVerification()?.also {
+            claimToken(it, Operation.VERIFICATION)
+        } ?: return
+        verifyAndLoadModelsClaimed(candidateApiKey, token)
     }
 
     fun verifyAndLoadModels(candidateApiKey: String?, token: Long) {
+        if (!claimToken(token, Operation.VERIFICATION)) return
+        verifyAndLoadModelsClaimed(candidateApiKey, token)
+    }
+
+    private fun verifyAndLoadModelsClaimed(candidateApiKey: String?, token: Long) {
         val source = operationLock.withLock {
             if (!isActiveLocked(token, Operation.VERIFICATION)) return
             VerificationSource(candidateApiKey?.takeIf(String::isNotBlank), state.hasSavedConfiguration)
@@ -137,14 +150,21 @@ class DeepSeekSettingsController(
     fun beginSaving(): Long? = begin(Operation.SAVING, requireVerifiedConfiguration = true)
 
     fun saveVerifiedConfiguration() {
-        val token = activeTokenFor(Operation.SAVING) ?: beginSaving() ?: return
-        saveVerifiedConfiguration(token)
+        val token = claimActiveToken(Operation.SAVING) ?: beginSaving()?.also {
+            claimToken(it, Operation.SAVING)
+        } ?: return
+        saveVerifiedConfigurationClaimed(token)
     }
 
     /**
      * 保存已由用户触发；token 过期后即使底层保存完成也不会再回写 UI，后续初始化会读取真实存储。
      */
     fun saveVerifiedConfiguration(token: Long) {
+        if (!claimToken(token, Operation.SAVING)) return
+        saveVerifiedConfigurationClaimed(token)
+    }
+
+    private fun saveVerifiedConfigurationClaimed(token: Long) {
         val request = operationLock.withLock {
             if (!isActiveLocked(token, Operation.SAVING)) return
             val apiKey = verifiedApiKey ?: return@withLock null
@@ -180,15 +200,21 @@ class DeepSeekSettingsController(
     fun beginClearing(): Long? = begin(Operation.CLEARING)
 
     fun clearConfiguration() {
-        val token = activeTokenFor(Operation.CLEARING) ?: beginClearing() ?: return
-        clearConfiguration(token)
+        val token = claimActiveToken(Operation.CLEARING) ?: beginClearing()?.also {
+            claimToken(it, Operation.CLEARING)
+        } ?: return
+        clearConfigurationClaimed(token)
     }
 
     /**
      * 清除已由用户触发；token 过期后即使底层清除完成也不会再回写 UI，后续初始化会读取真实存储。
      */
     fun clearConfiguration(token: Long) {
-        if (!isActive(token, Operation.CLEARING)) return
+        if (!claimToken(token, Operation.CLEARING)) return
+        clearConfigurationClaimed(token)
+    }
+
+    private fun clearConfigurationClaimed(token: Long) {
         try {
             configurationStore.clear()
             operationLock.withLock {
@@ -241,12 +267,17 @@ class DeepSeekSettingsController(
         token
     }
 
-    private fun activeTokenFor(operation: Operation): Long? = operationLock.withLock {
-        activeOperation?.takeIf { it.operation == operation }?.token
+    private fun claimActiveToken(operation: Operation): Long? = operationLock.withLock {
+        activeOperation?.takeIf { it.operation == operation && !it.workerClaimed }?.also {
+            it.workerClaimed = true
+        }?.token
     }
 
-    private fun isActive(token: Long, operation: Operation): Boolean = operationLock.withLock {
-        isActiveLocked(token, operation)
+    private fun claimToken(token: Long, operation: Operation): Boolean = operationLock.withLock {
+        activeOperation?.takeIf { it.token == token && it.operation == operation && !it.workerClaimed }?.let {
+            it.workerClaimed = true
+            true
+        } ?: false
     }
 
     private fun isActiveLocked(token: Long, operation: Operation): Boolean =
@@ -327,6 +358,7 @@ class DeepSeekSettingsController(
     private data class ActiveOperation(
         val operation: Operation,
         val token: Long,
+        var workerClaimed: Boolean = false,
     )
 
     private data class VerificationSource(

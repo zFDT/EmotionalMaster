@@ -441,6 +441,63 @@ class DeepSeekSettingsControllerTest {
     }
 
     @Test
+    fun `重复无 token 验证 worker 只调用一次目录`() {
+        val catalog = BlockingCountingCatalog()
+        val controller = DeepSeekSettingsController(FakeStore(), catalog)
+        val executor = Executors.newFixedThreadPool(2)
+        val duplicateCompleted = CountDownLatch(1)
+        try {
+            controller.beginVerification()
+            val first = executor.submit { controller.verifyAndLoadModels("candidate-secret") }
+            assertTrue(catalog.firstCallEntered.await(1, TimeUnit.SECONDS))
+
+            val duplicate = executor.submit {
+                controller.verifyAndLoadModels("candidate-secret")
+                duplicateCompleted.countDown()
+            }
+            assertTrue(duplicateCompleted.await(200, TimeUnit.MILLISECONDS))
+            assertEquals(1, catalog.calls)
+
+            catalog.releaseFirstCall.countDown()
+            first.get(1, TimeUnit.SECONDS)
+            duplicate.get(1, TimeUnit.SECONDS)
+            assertEquals(1, catalog.calls)
+        } finally {
+            catalog.releaseFirstCall.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `重复无 token 保存 worker 只调用一次存储`() {
+        val store = BlockingSaveStore()
+        val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("model"))))
+        val executor = Executors.newFixedThreadPool(2)
+        val duplicateCompleted = CountDownLatch(1)
+        try {
+            controller.verifyAndLoadModels("candidate-secret")
+            controller.beginSaving()
+            val first = executor.submit { controller.saveVerifiedConfiguration() }
+            assertTrue(store.saveEntered.await(1, TimeUnit.SECONDS))
+
+            val duplicate = executor.submit {
+                controller.saveVerifiedConfiguration()
+                duplicateCompleted.countDown()
+            }
+            assertTrue(duplicateCompleted.await(200, TimeUnit.MILLISECONDS))
+            assertEquals(1, store.saveCalls)
+
+            store.releaseSave.countDown()
+            first.get(1, TimeUnit.SECONDS)
+            duplicate.get(1, TimeUnit.SECONDS)
+            assertEquals(1, store.saveCalls)
+        } finally {
+            store.releaseSave.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun `丢弃候选配置后无法保存且不保留模型`() {
         val store = FakeStore(configuration = DeepSeekConfiguration("saved-model", "saved-secret"))
         val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("candidate-model"))))
@@ -592,6 +649,41 @@ class DeepSeekSettingsControllerTest {
         }
 
         override fun save(configuration: DeepSeekConfiguration) = Unit
+
+        override fun clear() = Unit
+    }
+
+    private class BlockingCountingCatalog : ModelCatalog {
+        val firstCallEntered = CountDownLatch(1)
+        val releaseFirstCall = CountDownLatch(1)
+        var calls = 0
+
+        override fun listModels(apiKey: String): List<AvailableModel> {
+            calls += 1
+            if (calls == 1) {
+                firstCallEntered.countDown()
+                check(releaseFirstCall.await(1, TimeUnit.SECONDS))
+            }
+            return listOf(AvailableModel("model", isDeprecated = false))
+        }
+    }
+
+    private class BlockingSaveStore : DeepSeekConfigurationStore {
+        val saveEntered = CountDownLatch(1)
+        val releaseSave = CountDownLatch(1)
+        var saveCalls = 0
+
+        override fun load(): DeepSeekConfiguration? = null
+
+        override fun configuredModelId(): String? = null
+
+        override fun save(configuration: DeepSeekConfiguration) {
+            saveCalls += 1
+            if (saveCalls == 1) {
+                saveEntered.countDown()
+                check(releaseSave.await(1, TimeUnit.SECONDS))
+            }
+        }
 
         override fun clear() = Unit
     }
