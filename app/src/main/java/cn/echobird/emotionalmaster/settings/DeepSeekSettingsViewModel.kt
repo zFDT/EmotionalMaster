@@ -10,6 +10,7 @@ import cn.echobird.emotionalmaster.storage.DeepSeekConfigurationStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -25,20 +26,22 @@ class DeepSeekSettingsViewModel(
     var uiState: DeepSeekSettingsUiState by mutableStateOf(controller.state)
         private set
 
+    private var operationJob: Job? = null
+
+    init {
+        initializeMetadata()
+    }
+
+    private fun initializeMetadata() {
+        if (!controller.beginInitialization()) return
+        publishState()
+        launchOperation(controller::initializeMetadata)
+    }
+
     fun verifyAndLoadModels(candidateApiKey: String?) {
         if (!controller.beginVerification()) return
         publishState()
-        viewModelScope.launch {
-            try {
-                withContext(ioDispatcher) {
-                    controller.verifyAndLoadModels(candidateApiKey)
-                }
-            } catch (exception: CancellationException) {
-                throw exception
-            } finally {
-                publishState()
-            }
-        }
+        launchOperation { controller.verifyAndLoadModels(candidateApiKey) }
     }
 
     fun selectModel(modelId: String) {
@@ -49,28 +52,35 @@ class DeepSeekSettingsViewModel(
     fun saveVerifiedConfiguration() {
         if (!controller.beginSaving()) return
         publishState()
-        viewModelScope.launch {
-            try {
-                withContext(ioDispatcher) {
-                    controller.saveVerifiedConfiguration()
-                }
-            } catch (exception: CancellationException) {
-                throw exception
-            } finally {
-                publishState()
-            }
-        }
+        launchOperation(controller::saveVerifiedConfiguration)
     }
 
     fun clearConfiguration() {
         if (!controller.beginClearing()) return
         publishState()
-        viewModelScope.launch {
+        launchOperation(controller::clearConfiguration)
+    }
+
+    fun discardCandidateConfiguration() {
+        operationJob?.cancel()
+        controller.discardCandidateConfiguration()
+        publishState()
+    }
+
+    fun consumeSuccess(): SettingsSuccess? {
+        val success = controller.consumeSuccess()
+        publishState()
+        return success
+    }
+
+    private fun launchOperation(operation: () -> Unit) {
+        operationJob = viewModelScope.launch {
             try {
                 withContext(ioDispatcher) {
-                    controller.clearConfiguration()
+                    operation()
                 }
             } catch (exception: CancellationException) {
+                controller.cancelPendingOperation()
                 throw exception
             } finally {
                 publishState()

@@ -16,13 +16,19 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CancellationException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
 
 class DeepSeekSettingsControllerTest {
     @Test
-    fun `构造时仅读取模型元数据而不解密`() {
+    fun `构造时不读取存储且初始化仅读取模型元数据`() {
         val store = FakeStore(configuration = DeepSeekConfiguration("saved-model", "saved-secret"))
 
         val controller = DeepSeekSettingsController(store, FakeCatalog())
+
+        assertEquals(0, store.configuredModelIdCalls)
+        assertEquals(0, store.loadCalls)
+        controller.beginInitialization()
+        controller.initializeMetadata()
 
         assertEquals(1, store.configuredModelIdCalls)
         assertEquals(0, store.loadCalls)
@@ -39,14 +45,40 @@ class DeepSeekSettingsControllerTest {
         assertFalse(emptyController.state.hasSavedConfiguration)
         assertNull(emptyController.state.errorMessage)
         assertEquals(0, emptyStore.loadCalls)
+        assertEquals(0, emptyStore.configuredModelIdCalls)
+        emptyController.beginInitialization()
+        emptyController.initializeMetadata()
+        assertEquals(1, emptyStore.configuredModelIdCalls)
 
         val corruptStore = FakeStore(metadataFailure = ConfigurationStoreException("metadata-secret"))
         val corruptController = DeepSeekSettingsController(corruptStore, FakeCatalog())
 
+        assertEquals(0, corruptStore.configuredModelIdCalls)
+        assertEquals(0, corruptStore.loadCalls)
+        corruptController.beginInitialization()
+        corruptController.initializeMetadata()
         assertFalse(corruptController.state.hasSavedConfiguration)
         assertEquals("DeepSeek 配置无效", corruptController.state.errorMessage)
         assertEquals(0, corruptStore.loadCalls)
         assertSecretIsNotObservable(corruptController)
+    }
+
+    @Test
+    fun `初始化取消会结束 loading 并继续抛出取消`() {
+        val controller = DeepSeekSettingsController(
+            FakeStore(metadataFailure = CancellationException("initialization-secret")),
+            FakeCatalog(),
+        )
+        assertTrue(controller.beginInitialization())
+
+        assertThrows(CancellationException::class.java) {
+            controller.initializeMetadata()
+        }
+
+        assertFalse(controller.state.isLoading)
+        assertFalse(controller.state.hasSavedConfiguration)
+        assertFalse(controller.state.canSave)
+        assertSecretIsNotObservable(controller)
     }
 
     @Test
@@ -83,6 +115,7 @@ class DeepSeekSettingsControllerTest {
         val store = FakeStore(configuration = DeepSeekConfiguration("saved", "saved-secret"))
         val catalog = FakeCatalog(models = listOf(model("fresh")))
         val controller = DeepSeekSettingsController(store, catalog)
+        initialize(controller)
 
         controller.verifyAndLoadModels("  ")
 
@@ -117,6 +150,7 @@ class DeepSeekSettingsControllerTest {
                 FakeStore(configuration = DeepSeekConfiguration("old-model", "saved-secret")),
                 FakeCatalog(failure = failure),
             )
+            initialize(controller)
 
             controller.verifyAndLoadModels("candidate-secret")
 
@@ -156,7 +190,8 @@ class DeepSeekSettingsControllerTest {
         assertTrue(controller.state.hasSavedConfiguration)
         assertEquals("second", controller.state.configuredModelId)
         assertFalse(controller.state.canSave)
-        assertTrue(controller.state.operationSucceeded)
+        assertEquals(SettingsSuccess.SAVED, controller.consumeSuccess())
+        assertNull(controller.consumeSuccess())
         controller.saveVerifiedConfiguration()
         assertEquals(1, store.saveCalls)
         assertSecretIsNotObservable(controller)
@@ -194,6 +229,7 @@ class DeepSeekSettingsControllerTest {
     fun `取消验证立即丢弃旧候选并且不得保存`() {
         val store = FakeStore(configuration = DeepSeekConfiguration("saved-model", "saved-secret"))
         val controller = DeepSeekSettingsController(store, FirstSuccessThenCancelledCatalog())
+        initialize(controller)
         controller.verifyAndLoadModels("first-candidate-secret")
 
         assertTrue(controller.state.canSave)
@@ -225,6 +261,7 @@ class DeepSeekSettingsControllerTest {
             saveFailure = ConfigurationStoreException("无法保存 DeepSeek 配置"),
         )
         val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("new-model"))))
+        initialize(controller)
         controller.verifyAndLoadModels("candidate-secret")
 
         controller.saveVerifiedConfiguration()
@@ -240,6 +277,7 @@ class DeepSeekSettingsControllerTest {
     fun `清除成功完全重置且失败保留旧元数据`() {
         val successfulStore = FakeStore(configuration = DeepSeekConfiguration("saved", "saved-secret"))
         val successfulController = DeepSeekSettingsController(successfulStore, FakeCatalog())
+        initialize(successfulController)
 
         successfulController.clearConfiguration()
 
@@ -248,7 +286,8 @@ class DeepSeekSettingsControllerTest {
         assertNull(successfulController.state.selectedModelId)
         assertTrue(successfulController.state.models.isEmpty())
         assertNull(successfulController.state.errorMessage)
-        assertTrue(successfulController.state.operationSucceeded)
+        assertEquals(SettingsSuccess.CLEARED, successfulController.consumeSuccess())
+        assertNull(successfulController.consumeSuccess())
 
         val failingController = DeepSeekSettingsController(
             FakeStore(
@@ -257,6 +296,7 @@ class DeepSeekSettingsControllerTest {
             ),
             FakeCatalog(),
         )
+        initialize(failingController)
         failingController.clearConfiguration()
 
         assertTrue(failingController.state.hasSavedConfiguration)
@@ -289,16 +329,11 @@ class DeepSeekSettingsControllerTest {
             val first = executor.submit { controller.verifyAndLoadModels("first-secret") }
             assertTrue(catalog.firstCallEntered.await(1, TimeUnit.SECONDS))
 
-            val duplicateCompleted = CountDownLatch(1)
-            val duplicate = executor.submit {
-                controller.verifyAndLoadModels("second-secret")
-                duplicateCompleted.countDown()
-            }
-            assertTrue(duplicateCompleted.await(200, TimeUnit.MILLISECONDS))
+            val duplicate = executor.submit<Boolean> { controller.beginVerification() }
+            assertFalse(duplicate.get(1, TimeUnit.SECONDS))
 
             catalog.releaseFirstCall.countDown()
             first.get(1, TimeUnit.SECONDS)
-            duplicate.get(1, TimeUnit.SECONDS)
             assertEquals(1, catalog.calls)
         } finally {
             catalog.releaseFirstCall.countDown()
@@ -306,7 +341,94 @@ class DeepSeekSettingsControllerTest {
         }
     }
 
+    @Test
+    fun `已预约验证 worker 在锁暂时被占用后仍会执行`() {
+        val controller = DeepSeekSettingsController(
+            FakeStore(),
+            FakeCatalog(models = listOf(model("verified-model"))),
+        )
+        val lock = controllerLock(controller)
+        val executor = Executors.newFixedThreadPool(2)
+        val lockHeld = CountDownLatch(1)
+        val releaseLock = CountDownLatch(1)
+        val workerCompleted = CountDownLatch(1)
+        try {
+            controller.beginVerification()
+            val holder = executor.submit {
+                lock.lock()
+                try {
+                    lockHeld.countDown()
+                    check(releaseLock.await(1, TimeUnit.SECONDS))
+                } finally {
+                    lock.unlock()
+                }
+            }
+            assertTrue(lockHeld.await(1, TimeUnit.SECONDS))
+
+            val worker = executor.submit {
+                controller.verifyAndLoadModels("candidate-secret")
+                workerCompleted.countDown()
+            }
+            assertFalse(workerCompleted.await(200, TimeUnit.MILLISECONDS))
+
+            releaseLock.countDown()
+            holder.get(1, TimeUnit.SECONDS)
+            worker.get(1, TimeUnit.SECONDS)
+            assertTrue(workerCompleted.await(1, TimeUnit.SECONDS))
+            assertFalse(controller.state.isLoading)
+            assertTrue(controller.state.canSave)
+        } finally {
+            releaseLock.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `丢弃候选配置后无法保存且不保留模型`() {
+        val store = FakeStore(configuration = DeepSeekConfiguration("saved-model", "saved-secret"))
+        val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("candidate-model"))))
+        initialize(controller)
+        controller.verifyAndLoadModels("candidate-secret")
+
+        controller.discardCandidateConfiguration()
+
+        assertTrue(controller.state.models.isEmpty())
+        assertEquals("saved-model", controller.state.selectedModelId)
+        assertFalse(controller.state.canSave)
+        controller.saveVerifiedConfiguration()
+        assertEquals(0, store.saveCalls)
+        assertSecretIsNotObservable(controller)
+    }
+
+    @Test
+    fun `刷新已保存密钥后的候选也可被丢弃`() {
+        val store = FakeStore(configuration = DeepSeekConfiguration("saved-model", "saved-secret"))
+        val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("fresh-model"))))
+        initialize(controller)
+        controller.verifyAndLoadModels(null)
+
+        controller.discardCandidateConfiguration()
+
+        assertEquals(1, store.loadCalls)
+        assertTrue(controller.state.models.isEmpty())
+        assertFalse(controller.state.canSave)
+        controller.saveVerifiedConfiguration()
+        assertEquals(0, store.saveCalls)
+        assertSecretIsNotObservable(controller)
+    }
+
     private fun model(id: String) = AvailableModel(id, isDeprecated = false)
+
+    private fun initialize(controller: DeepSeekSettingsController) {
+        assertTrue(controller.beginInitialization())
+        controller.initializeMetadata()
+    }
+
+    private fun controllerLock(controller: DeepSeekSettingsController): ReentrantLock =
+        DeepSeekSettingsController::class.java.getDeclaredField("operationLock").run {
+            isAccessible = true
+            get(controller) as ReentrantLock
+        }
 
     private fun assertSecretIsNotObservable(controller: DeepSeekSettingsController) {
         val observable = controller.state.toString() + controller.state.errorMessage.orEmpty()
@@ -318,7 +440,6 @@ class DeepSeekSettingsControllerTest {
     private class FakeStore(
         private var configuration: DeepSeekConfiguration? = null,
         private val metadataFailure: Throwable? = null,
-        private val loadFailure: Throwable? = null,
         private val saveFailure: Throwable? = null,
         private val clearFailure: Throwable? = null,
     ) : DeepSeekConfigurationStore {
@@ -330,7 +451,6 @@ class DeepSeekSettingsControllerTest {
 
         override fun load(): DeepSeekConfiguration? {
             loadCalls += 1
-            loadFailure?.let { throw it }
             return configuration
         }
 

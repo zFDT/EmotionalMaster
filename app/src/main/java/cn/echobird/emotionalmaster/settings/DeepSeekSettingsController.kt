@@ -17,8 +17,13 @@ data class DeepSeekSettingsUiState(
     val isLoading: Boolean = false,
     val canSave: Boolean = false,
     val errorMessage: String? = null,
-    val operationSucceeded: Boolean = false,
+    val success: SettingsSuccess? = null,
 )
+
+enum class SettingsSuccess {
+    SAVED,
+    CLEARED,
+}
 
 class DeepSeekSettingsController(
     private val configurationStore: DeepSeekConfigurationStore,
@@ -28,8 +33,41 @@ class DeepSeekSettingsController(
     private var pendingOperation: Operation? = null
     private val operationLock = ReentrantLock()
 
-    var state: DeepSeekSettingsUiState = initialState()
+    var state: DeepSeekSettingsUiState = DeepSeekSettingsUiState()
         private set
+
+    fun beginInitialization(): Boolean {
+        if (!operationLock.tryLock()) return false
+        return try {
+            begin(Operation.INITIALIZATION)
+        } finally {
+            operationLock.unlock()
+        }
+    }
+
+    fun initializeMetadata() {
+        operationLock.lock()
+        try {
+            if (!startOrContinue(Operation.INITIALIZATION)) return
+            try {
+                val configuredModelId = configurationStore.configuredModelId()
+                state = DeepSeekSettingsUiState(
+                    hasSavedConfiguration = configuredModelId != null,
+                    configuredModelId = configuredModelId,
+                    selectedModelId = configuredModelId,
+                )
+            } catch (exception: CancellationException) {
+                cancelPendingOperation()
+                throw exception
+            } catch (_: Exception) {
+                state = DeepSeekSettingsUiState(errorMessage = INVALID_SAVED_CONFIGURATION_MESSAGE)
+            } finally {
+                pendingOperation = null
+            }
+        } finally {
+            operationLock.unlock()
+        }
+    }
 
     fun beginVerification(): Boolean {
         if (!operationLock.tryLock()) return false
@@ -41,7 +79,7 @@ class DeepSeekSettingsController(
     }
 
     fun verifyAndLoadModels(candidateApiKey: String?) {
-        if (!operationLock.tryLock()) return
+        operationLock.lock()
         try {
             if (!startOrContinue(Operation.VERIFICATION)) return
             try {
@@ -64,10 +102,10 @@ class DeepSeekSettingsController(
                     isLoading = false,
                     canSave = true,
                     errorMessage = null,
-                    operationSucceeded = false,
+                    success = null,
                 )
             } catch (exception: CancellationException) {
-                finishLoading()
+                cancelPendingOperation()
                 throw exception
             } catch (exception: ModelCatalogException) {
                 verificationFailed(exception.message ?: VERIFY_FAILED_MESSAGE)
@@ -89,7 +127,7 @@ class DeepSeekSettingsController(
                 state = state.copy(
                     canSave = false,
                     errorMessage = INVALID_MODEL_MESSAGE,
-                    operationSucceeded = false,
+                    success = null,
                 )
                 return
             }
@@ -98,7 +136,7 @@ class DeepSeekSettingsController(
                 selectedModelId = modelId,
                 canSave = verifiedApiKey != null,
                 errorMessage = null,
-                operationSucceeded = false,
+                success = null,
             )
         } finally {
             operationLock.unlock()
@@ -115,13 +153,13 @@ class DeepSeekSettingsController(
     }
 
     fun saveVerifiedConfiguration() {
-        if (!operationLock.tryLock()) return
+        operationLock.lock()
         try {
             if (!startOrContinue(Operation.SAVING, requireVerifiedConfiguration = true)) return
             val apiKey = verifiedApiKey
             val modelId = state.selectedModelId?.takeIf { selectedId -> state.models.any { it.id == selectedId } }
             if (apiKey == null || modelId == null) {
-                finishLoading()
+                discardCandidateConfiguration(errorMessage = null)
                 return
             }
 
@@ -134,11 +172,10 @@ class DeepSeekSettingsController(
                     isLoading = false,
                     canSave = false,
                     errorMessage = null,
-                    operationSucceeded = true,
+                    success = SettingsSuccess.SAVED,
                 )
             } catch (exception: CancellationException) {
-                verifiedApiKey = null
-                finishLoading()
+                cancelPendingOperation()
                 throw exception
             } catch (_: Exception) {
                 verifiedApiKey = null
@@ -146,7 +183,7 @@ class DeepSeekSettingsController(
                     isLoading = false,
                     canSave = false,
                     errorMessage = SAVE_FAILED_MESSAGE,
-                    operationSucceeded = false,
+                    success = null,
                 )
             } finally {
                 pendingOperation = null
@@ -166,16 +203,15 @@ class DeepSeekSettingsController(
     }
 
     fun clearConfiguration() {
-        if (!operationLock.tryLock()) return
+        operationLock.lock()
         try {
             if (!startOrContinue(Operation.CLEARING)) return
             try {
                 configurationStore.clear()
                 verifiedApiKey = null
-                state = DeepSeekSettingsUiState(operationSucceeded = true)
+                state = DeepSeekSettingsUiState(success = SettingsSuccess.CLEARED)
             } catch (exception: CancellationException) {
-                verifiedApiKey = null
-                finishLoading()
+                cancelPendingOperation()
                 throw exception
             } catch (_: Exception) {
                 verifiedApiKey = null
@@ -183,7 +219,7 @@ class DeepSeekSettingsController(
                     isLoading = false,
                     canSave = false,
                     errorMessage = CLEAR_FAILED_MESSAGE,
-                    operationSucceeded = false,
+                    success = null,
                 )
             } finally {
                 pendingOperation = null
@@ -191,18 +227,6 @@ class DeepSeekSettingsController(
         } finally {
             operationLock.unlock()
         }
-    }
-
-    private fun initialState(): DeepSeekSettingsUiState = try {
-        configurationStore.configuredModelId()?.let { modelId ->
-            DeepSeekSettingsUiState(
-                hasSavedConfiguration = true,
-                configuredModelId = modelId,
-                selectedModelId = modelId,
-            )
-        } ?: DeepSeekSettingsUiState()
-    } catch (_: Exception) {
-        DeepSeekSettingsUiState(errorMessage = INVALID_SAVED_CONFIGURATION_MESSAGE)
     }
 
     private fun begin(operation: Operation, requireVerifiedConfiguration: Boolean = false): Boolean {
@@ -218,7 +242,7 @@ class DeepSeekSettingsController(
             isLoading = true,
             canSave = false,
             errorMessage = null,
-            operationSucceeded = false,
+            success = null,
         )
         return true
     }
@@ -247,22 +271,53 @@ class DeepSeekSettingsController(
     }
 
     private fun verificationFailed(message: String) {
+        discardCandidateConfiguration(message)
+    }
+
+    fun discardCandidateConfiguration() {
+        operationLock.lock()
+        try {
+            discardCandidateConfiguration(errorMessage = null)
+        } finally {
+            operationLock.unlock()
+        }
+    }
+
+    fun cancelPendingOperation() {
+        operationLock.lock()
+        try {
+            if (state.isLoading || pendingOperation != null) {
+                discardCandidateConfiguration(errorMessage = null)
+            }
+        } finally {
+            operationLock.unlock()
+        }
+    }
+
+    fun consumeSuccess(): SettingsSuccess? {
+        operationLock.lock()
+        return try {
+            state.success?.also { state = state.copy(success = null) }
+        } finally {
+            operationLock.unlock()
+        }
+    }
+
+    private fun discardCandidateConfiguration(errorMessage: String?) {
         verifiedApiKey = null
+        pendingOperation = null
         state = state.copy(
             models = emptyList(),
             selectedModelId = state.configuredModelId,
             isLoading = false,
             canSave = false,
-            errorMessage = message,
-            operationSucceeded = false,
+            errorMessage = errorMessage,
+            success = null,
         )
     }
 
-    private fun finishLoading() {
-        state = state.copy(isLoading = false, canSave = false)
-    }
-
     private enum class Operation {
+        INITIALIZATION,
         VERIFICATION,
         SAVING,
         CLEARING,
