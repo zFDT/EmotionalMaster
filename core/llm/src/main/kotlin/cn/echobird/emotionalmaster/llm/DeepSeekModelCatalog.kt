@@ -1,22 +1,30 @@
 package cn.echobird.emotionalmaster.llm
 
 import java.io.IOException
-import java.net.SocketTimeoutException
+import java.io.InterruptedIOException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
-class DeepSeekModelCatalog(
-    endpoint: String = DEFAULT_ENDPOINT,
-    private val client: OkHttpClient = OkHttpClient(),
+class DeepSeekModelCatalog private constructor(
+    private val endpoint: HttpUrl,
+    private val client: OkHttpClient,
 ) : ModelCatalog {
-    private val endpoint = endpoint.toHttpUrl()
     private val json = Json { isLenient = false }
+
+    constructor(client: OkHttpClient = OkHttpClient()) :
+        this(DEFAULT_ENDPOINT.toHttpUrl(), client)
+
+    internal constructor(
+        endpoint: String,
+        client: OkHttpClient = OkHttpClient(),
+    ) : this(endpoint.toHttpUrl(), client)
 
     override fun listModels(apiKey: String): List<AvailableModel> {
         require(apiKey.isNotBlank()) { "DeepSeek API Key 不能为空" }
@@ -31,7 +39,7 @@ class DeepSeekModelCatalog(
                 if (!response.isSuccessful) throw httpException(response.code)
                 parseModels(response.body.string())
             }
-        } catch (error: SocketTimeoutException) {
+        } catch (error: InterruptedIOException) {
             throw ModelCatalogException.Timeout(error)
         } catch (error: IOException) {
             throw ModelCatalogException.Transport(error)

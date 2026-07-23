@@ -143,6 +143,18 @@ class DeepSeekModelCatalogTest {
     }
 
     @Test
+    fun `调用总超时被分类为超时错误`() {
+        server = serverResponding(status = 200, body = modelsResponse("deepseek-v4-pro"), delayMillis = 200)
+        val client = OkHttpClient.Builder()
+            .callTimeout(50, TimeUnit.MILLISECONDS)
+            .build()
+
+        assertThrows(ModelCatalogException.Timeout::class.java) {
+            catalogFor(server!!, client).listModels("test-api-key")
+        }
+    }
+
+    @Test
     fun `响应头已返回后读取 body 超时仍被分类`() {
         server = serverResponding(
             status = 200,
