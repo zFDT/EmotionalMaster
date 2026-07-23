@@ -424,7 +424,7 @@ class DeepSeekSettingsControllerTest {
             val initialization = executor.submit { controller.initializeMetadata(initializationToken) }
             assertTrue(store.readEntered.await(1, TimeUnit.SECONDS))
 
-            controller.discardCandidateConfiguration()
+            controller.cancelPendingOperation(initializationToken)
             controller.verifyAndLoadModels("candidate-secret")
             assertEquals("new-model", controller.state.selectedModelId)
             assertTrue(controller.state.canSave)
@@ -436,6 +436,92 @@ class DeepSeekSettingsControllerTest {
             assertFalse(controller.state.hasSavedConfiguration)
         } finally {
             store.releaseRead.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `离页丢弃不取消阻塞初始化的最终对账`() {
+        val store = BlockingMetadataStore()
+        val controller = DeepSeekSettingsController(store, FakeCatalog())
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val token = controller.beginInitialization()!!
+            val worker = executor.submit { controller.initializeMetadata(token) }
+            assertTrue(store.readEntered.await(1, TimeUnit.SECONDS))
+            assertFalse(controller.discardCandidateConfiguration())
+            assertTrue(controller.state.isLoading)
+            store.releaseRead.countDown()
+            worker.get(1, TimeUnit.SECONDS)
+            assertTrue(controller.state.hasSavedConfiguration)
+            assertEquals("stale-model", controller.state.configuredModelId)
+        } finally {
+            store.releaseRead.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `离页丢弃不取消阻塞保存的最终对账`() {
+        val store = BlockingSaveStore()
+        val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("model"))))
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            controller.verifyAndLoadModels("candidate-secret")
+            val token = controller.beginSaving()!!
+            val worker = executor.submit { controller.saveVerifiedConfiguration(token) }
+            assertTrue(store.saveEntered.await(1, TimeUnit.SECONDS))
+            assertFalse(controller.discardCandidateConfiguration())
+            store.releaseSave.countDown()
+            worker.get(1, TimeUnit.SECONDS)
+            assertTrue(controller.state.hasSavedConfiguration)
+            assertEquals("model", controller.state.configuredModelId)
+        } finally {
+            store.releaseSave.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `离页丢弃不取消阻塞清除的最终对账`() {
+        val store = BlockingClearStore()
+        val controller = DeepSeekSettingsController(store, FakeCatalog())
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            initialize(controller)
+            val token = controller.beginClearing()!!
+            val worker = executor.submit { controller.clearConfiguration(token) }
+            assertTrue(store.clearEntered.await(1, TimeUnit.SECONDS))
+            assertFalse(controller.discardCandidateConfiguration())
+            store.releaseClear.countDown()
+            worker.get(1, TimeUnit.SECONDS)
+            assertFalse(controller.state.hasSavedConfiguration)
+            assertEquals(SettingsSuccess.CLEARED, controller.consumeSuccess())
+        } finally {
+            store.releaseClear.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `刷新旧密钥在读取后被丢弃时不调用目录`() {
+        val store = BlockingLoadStore()
+        val catalog = CountingCatalog()
+        val controller = DeepSeekSettingsController(store, catalog)
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            initialize(controller)
+            val token = controller.beginVerification()!!
+            val worker = executor.submit { controller.verifyAndLoadModels(null, token) }
+            assertTrue(store.loadEntered.await(1, TimeUnit.SECONDS))
+            assertTrue(controller.discardCandidateConfiguration())
+            store.releaseLoad.countDown()
+            worker.get(1, TimeUnit.SECONDS)
+            assertEquals(0, catalog.calls)
+            assertTrue(controller.state.models.isEmpty())
+            assertFalse(controller.state.canSave)
+        } finally {
+            store.releaseLoad.countDown()
             executor.shutdownNow()
         }
     }
@@ -704,5 +790,47 @@ class DeepSeekSettingsControllerTest {
         }
 
         override fun clear() = Unit
+    }
+
+    private class BlockingClearStore : DeepSeekConfigurationStore {
+        val clearEntered = CountDownLatch(1)
+        val releaseClear = CountDownLatch(1)
+
+        override fun load(): DeepSeekConfiguration? = null
+
+        override fun configuredModelId(): String? = "saved-model"
+
+        override fun save(configuration: DeepSeekConfiguration) = Unit
+
+        override fun clear() {
+            clearEntered.countDown()
+            check(releaseClear.await(1, TimeUnit.SECONDS))
+        }
+    }
+
+    private class BlockingLoadStore : DeepSeekConfigurationStore {
+        val loadEntered = CountDownLatch(1)
+        val releaseLoad = CountDownLatch(1)
+
+        override fun load(): DeepSeekConfiguration? {
+            loadEntered.countDown()
+            check(releaseLoad.await(1, TimeUnit.SECONDS))
+            return DeepSeekConfiguration("saved-model", "saved-secret")
+        }
+
+        override fun configuredModelId(): String? = "saved-model"
+
+        override fun save(configuration: DeepSeekConfiguration) = Unit
+
+        override fun clear() = Unit
+    }
+
+    private class CountingCatalog : ModelCatalog {
+        var calls = 0
+
+        override fun listModels(apiKey: String): List<AvailableModel> {
+            calls += 1
+            return listOf(AvailableModel("fresh-model", isDeprecated = false))
+        }
     }
 }

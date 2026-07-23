@@ -63,9 +63,10 @@ class DeepSeekSettingsViewModel(
     }
 
     fun discardCandidateConfiguration() {
-        operationJob?.cancel()
-        activeToken = null
-        controller.discardCandidateConfiguration()
+        if (controller.discardCandidateConfiguration()) {
+            operationJob?.cancel()
+            activeToken = null
+        }
         publishState()
     }
 

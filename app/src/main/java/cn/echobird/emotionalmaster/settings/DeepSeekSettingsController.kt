@@ -97,6 +97,7 @@ class DeepSeekSettingsController(
             verificationFailed(token, INPUT_REQUIRED_MESSAGE)
             return
         }
+        if (!isActive(token, Operation.VERIFICATION)) return
 
         try {
             val models = modelCatalog.listModels(apiKey)
@@ -223,8 +224,11 @@ class DeepSeekSettingsController(
         }
     }
 
-    fun discardCandidateConfiguration() {
-        operationLock.withLock { discardCandidateLocked() }
+    fun discardCandidateConfiguration(): Boolean = operationLock.withLock {
+        val operation = activeOperation?.operation
+        if (operation != null && operation != Operation.VERIFICATION) return false
+        discardCandidateLocked()
+        true
     }
 
     fun cancelPendingOperation(token: Long? = null) {
@@ -280,6 +284,10 @@ class DeepSeekSettingsController(
             it.workerClaimed = true
             true
         } ?: false
+    }
+
+    private fun isActive(token: Long, operation: Operation): Boolean = operationLock.withLock {
+        isActiveLocked(token, operation)
     }
 
     private fun isActiveLocked(token: Long, operation: Operation): Boolean =
