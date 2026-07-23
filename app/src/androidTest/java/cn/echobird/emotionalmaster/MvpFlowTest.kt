@@ -17,12 +17,20 @@ import cn.echobird.emotionalmaster.importing.ImportDocumentPreview
 import cn.echobird.emotionalmaster.importing.ImportViewModel
 import cn.echobird.emotionalmaster.model.ChatMessage
 import cn.echobird.emotionalmaster.model.MessageDirection
+import cn.echobird.emotionalmaster.llm.ModelProvider
+import cn.echobird.emotionalmaster.llm.ModelProviderException
+import cn.echobird.emotionalmaster.llm.ReplySuggestionService
+import cn.echobird.emotionalmaster.reply.ReplyScreen
 import cn.echobird.emotionalmaster.reply.ReplyViewModel
 import cn.echobird.emotionalmaster.ui.EmotionalMasterTheme
 import java.time.Instant
 import java.io.File
+import java.net.SocketTimeoutException
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.espresso.Espresso.pressBack
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -121,6 +129,41 @@ class MvpFlowTest {
         composeRule.onNodeWithText("设备存储暂时不可用").assertIsDisplayed()
         composeRule.onNodeWithText("确认导入").performScrollTo().assertIsDisplayed()
         capture("07-import-save-error")
+    }
+
+    @Test
+    fun onlineFailureKeepsContextPreviewAndMessage() {
+        val viewModel = ReplyViewModel(
+            service = ReplySuggestionService(
+                ModelProvider { throw ModelProviderException.Timeout(SocketTimeoutException("secret")) },
+            ),
+        )
+        viewModel.start(samplePreview().messages)
+        viewModel.updateCurrentMessage("你最近怎么总是这么忙？")
+        viewModel.showContextPreview()
+
+        composeRule.setContent {
+            EmotionalMasterTheme {
+                ReplyScreen(
+                    state = viewModel.uiState,
+                    onCurrentMessageChange = viewModel::updateCurrentMessage,
+                    onPreviewContext = viewModel::showContextPreview,
+                    onDismissContextPreview = viewModel::dismissContextPreview,
+                    onGenerateSuggestions = viewModel::generateSuggestions,
+                    onBack = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("确认生成").performClick()
+        composeRule.waitUntil(5_000) { !viewModel.uiState.isGenerating }
+
+        composeRule.onNodeWithText("将上传的上下文").assertIsDisplayed()
+        composeRule.onNodeWithText("连接 DeepSeek 超时").assertIsDisplayed()
+        assertFalse(viewModel.uiState.isGenerating)
+        assertTrue(viewModel.uiState.showContextPreview)
+        assertTrue(viewModel.uiState.suggestions.isEmpty())
+        assertEquals("你最近怎么总是这么忙？", viewModel.uiState.currentMessage)
     }
 
     private fun capture(name: String) {

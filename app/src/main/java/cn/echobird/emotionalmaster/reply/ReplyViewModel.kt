@@ -15,6 +15,7 @@ import cn.echobird.emotionalmaster.model.ChatMessage
 import cn.echobird.emotionalmaster.model.MessageDirection
 import cn.echobird.emotionalmaster.model.ReplySuggestion
 import java.time.Instant
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -79,9 +80,8 @@ class ReplyViewModel(
         if (uiState.isGenerating) return
         uiState = uiState.copy(isGenerating = true, generationError = null)
         viewModelScope.launch {
-            runCatching {
-                withContext(Dispatchers.IO) { service?.suggest(requestMessages()) }
-            }.onSuccess { result ->
+            try {
+                val result = withContext(Dispatchers.IO) { service?.suggest(requestMessages()) }
                 uiState = when (result) {
                     null -> {
                         val suggestions = fallback.suggestions()
@@ -101,16 +101,22 @@ class ReplyViewModel(
                     )
 
                     is OnlineFailure -> uiState.copy(
-                        showContextPreview = false,
+                        showContextPreview = true,
+                        suggestions = emptyList(),
                         isOfflineFallback = false,
                         isGenerating = false,
                         generationError = result.message,
                     )
                 }
-            }.onFailure { error ->
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
                 uiState = uiState.copy(
+                    showContextPreview = true,
+                    suggestions = emptyList(),
+                    isOfflineFallback = false,
                     isGenerating = false,
-                    generationError = error.message ?: "模型服务暂时不可用",
+                    generationError = "在线回复暂时不可用",
                 )
             }
         }

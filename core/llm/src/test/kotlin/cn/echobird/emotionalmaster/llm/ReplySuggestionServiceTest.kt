@@ -27,16 +27,18 @@ class ReplySuggestionServiceTest {
     }
 
     @Test
-    fun `合法结构返回六条 OnlineSuccess`() {
-        val provider = FakeProvider(validSuggestionsJson(6))
+    fun `合法结构返回四到六条 OnlineSuccess`() {
+        listOf(4, 6).forEach { count ->
+            val provider = FakeProvider(validSuggestionsJson(count))
 
-        val result = ReplySuggestionService(provider).suggest(listOf(message("最近怎么样？")))
+            val result = ReplySuggestionService(provider).suggest(listOf(message("最近怎么样？")))
 
-        assertTrue(result is OnlineSuccess)
-        assertEquals(SuggestionMode.ONLINE, result.mode)
-        assertEquals(6, result.suggestions!!.suggestions.size)
-        assertEquals(6, result.suggestions!!.suggestions.map { it.strategy }.distinct().size)
-        assertFalse(provider.lastRequest!!.context.messages.single().text.contains("message-id"))
+            assertTrue(result is OnlineSuccess)
+            assertEquals(SuggestionMode.ONLINE, result.mode)
+            assertEquals(count, result.suggestions!!.suggestions.size)
+            assertEquals(count, result.suggestions!!.suggestions.map { it.strategy }.distinct().size)
+            assertFalse(provider.lastRequest!!.context.messages.single().text.contains("message-id"))
+        }
     }
 
     @Test
