@@ -192,6 +192,15 @@ fun EmotionalMasterFlow(
         )
     }
 
+    LaunchedEffect(settingsState.success, screen) {
+        if (settingsState.success != null) {
+            val success = onConsumeDeepSeekSuccess()
+            if (success != null && screen == MvpScreen.DEEPSEEK_SETTINGS) {
+                navigate(MvpScreen.REPLY)
+            }
+        }
+    }
+
     Surface(color = MaterialTheme.colorScheme.background) {
         key(screen) {
         when (screen) {
@@ -241,11 +250,6 @@ fun EmotionalMasterFlow(
             )
 
             MvpScreen.DEEPSEEK_SETTINGS -> {
-                LaunchedEffect(settingsState.success) {
-                    if (settingsState.success != null && onConsumeDeepSeekSuccess() != null) {
-                        navigate(MvpScreen.REPLY)
-                    }
-                }
                 DisposableEffect(Unit) {
                     onDispose(onDiscardDeepSeekCandidate)
                 }

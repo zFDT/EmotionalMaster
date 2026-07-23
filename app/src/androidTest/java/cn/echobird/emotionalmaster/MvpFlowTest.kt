@@ -208,6 +208,79 @@ class MvpFlowTest {
     }
 
     @Test
+    fun backgroundSettingsSuccessIsConsumedWithoutReopeningNavigation() {
+        val importViewModel = ImportViewModel()
+        var settingsState by mutableStateOf(DeepSeekSettingsUiState())
+        var consumeCount = 0
+
+        composeRule.setContent {
+            EmotionalMasterTheme {
+                EmotionalMasterFlow(
+                    importViewModel = importViewModel,
+                    analysisViewModel = AnalysisViewModel(),
+                    replyViewModel = ReplyViewModel(),
+                    onChooseDocument = { importViewModel.showPreview(samplePreview()) },
+                    settingsState = settingsState,
+                    onVerifyDeepSeek = {
+                        settingsState = settingsState.copy(
+                            models = listOf(AvailableModel("deepseek-v4-pro", isDeprecated = false)),
+                            selectedModelId = "deepseek-v4-pro",
+                            canSave = true,
+                        )
+                    },
+                    onSaveDeepSeek = {
+                        settingsState = settingsState.copy(isLoading = true, canSave = false)
+                    },
+                    onClearDeepSeek = {
+                        settingsState = settingsState.copy(isLoading = true)
+                    },
+                    onConsumeDeepSeekSuccess = {
+                        settingsState.success?.also {
+                            consumeCount += 1
+                            settingsState = settingsState.copy(success = null)
+                        }
+                    },
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("选择聊天文件").performScrollTo().performClick()
+        composeRule.onNodeWithText("确认导入").performScrollTo().performClick()
+        composeRule.onNodeWithText("获取回复建议").performScrollTo().performClick()
+        composeRule.onNodeWithText("模型设置").performScrollTo().performClick()
+        composeRule.onNodeWithTag("deepseek-api-key").performTextInput("test-key")
+        composeRule.onNodeWithText("验证并获取模型").performScrollTo().performClick()
+        composeRule.onNodeWithText("保存并启用").performScrollTo().performClick()
+        composeRule.onNodeWithText("保存并启用").assertIsDisplayed()
+        composeRule.onNodeWithText("返回").performScrollTo().performClick()
+
+        composeRule.runOnIdle {
+            settingsState = settingsState.copy(
+                hasSavedConfiguration = true,
+                configuredModelId = "deepseek-v4-pro",
+                selectedModelId = "deepseek-v4-pro",
+                isLoading = false,
+                success = SettingsSuccess.SAVED,
+            )
+        }
+        composeRule.onNodeWithText("DeepSeek · deepseek-v4-pro").assertIsDisplayed()
+        composeRule.runOnIdle { assertEquals(1, consumeCount) }
+        composeRule.onNodeWithText("模型设置").performScrollTo().performClick()
+        composeRule.onNodeWithText("DeepSeek 官方服务").assertIsDisplayed()
+
+        composeRule.onNodeWithText("清除已保存配置").performScrollTo().performClick()
+        composeRule.onNodeWithText("清除已保存配置").assertIsDisplayed()
+        composeRule.onNodeWithText("返回").performScrollTo().performClick()
+        composeRule.runOnIdle {
+            settingsState = DeepSeekSettingsUiState(success = SettingsSuccess.CLEARED)
+        }
+        composeRule.onNodeWithText("未配置（将使用本地降级）").assertIsDisplayed()
+        composeRule.runOnIdle { assertEquals(2, consumeCount) }
+        composeRule.onNodeWithText("模型设置").performScrollTo().performClick()
+        composeRule.onNodeWithText("DeepSeek 官方服务").assertIsDisplayed()
+    }
+
+    @Test
     fun onlineFailureKeepsContextPreviewAndMessage() {
         val viewModel = ReplyViewModel(
             service = ReplySuggestionService(
