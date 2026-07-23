@@ -3,7 +3,12 @@ package cn.echobird.emotionalmaster.storage
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.SharedPreferences
-import java.util.UUID
+import java.io.PrintWriter
+import java.io.StringWriter
+import java.util.Base64
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -49,6 +54,16 @@ class DeepSeekConfigurationStoreTest {
     }
 
     @Test
+    fun `配置字符串表示始终脱敏 apiKey`() {
+        val apiKey = "sk-secret-must-not-appear"
+
+        val text = DeepSeekConfiguration("deepseek-chat", apiKey).toString()
+
+        assertFalse(text.contains(apiKey))
+        assertTrue(text.contains("apiKey=[REDACTED]"))
+    }
+
+    @Test
     fun `保存新配置覆盖旧配置`() {
         store.save(DeepSeekConfiguration("deepseek-chat", "first-key"))
 
@@ -64,13 +79,14 @@ class DeepSeekConfigurationStoreTest {
     fun `加密失败时保留旧配置`() {
         val oldConfiguration = DeepSeekConfiguration("deepseek-chat", "old-key")
         store.save(oldConfiguration)
-        cipher.encryptFailure = IllegalStateException("不得泄露的加密错误")
+        cipher.encryptFailure = IllegalStateException("encrypt-secret")
 
         val exception = assertThrows(ConfigurationStoreException::class.java) {
             store.save(DeepSeekConfiguration("deepseek-reasoner", "new-key"))
         }
 
         assertEquals("无法保存 DeepSeek 配置", exception.message)
+        assertPublicExceptionDoesNotContain(exception, "encrypt-secret")
         assertEquals(oldConfiguration, store.load())
     }
 
@@ -89,6 +105,19 @@ class DeepSeekConfigurationStoreTest {
             assertThrows(IllegalArgumentException::class.java) {
                 DeepSeekConfiguration("model", apiKey)
             }
+        }
+    }
+
+    @Test
+    fun `配置构造拒绝超长 modelId 和无效或超长 apiKey`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DeepSeekConfiguration("m".repeat(129), "key")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DeepSeekConfiguration("model", "\uD800")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DeepSeekConfiguration("model", "k".repeat(4097))
         }
     }
 
@@ -146,11 +175,30 @@ class DeepSeekConfigurationStoreTest {
     }
 
     @Test
+    fun `读取拒绝短 envelope 和超长 Base64`() {
+        val shortCiphertext = Base64.getEncoder().encodeToString(ByteArray(15))
+        val validIv = Base64.getEncoder().encodeToString(ByteArray(12))
+        putStoredConfiguration(FORMAT_VERSION, FORMAT_VERSION, shortCiphertext, validIv)
+        assertInvalidConfiguration { store.load() }
+
+        val validCiphertext = Base64.getEncoder().encodeToString(ByteArray(16))
+        val shortIv = Base64.getEncoder().encodeToString(ByteArray(11))
+        putStoredConfiguration(FORMAT_VERSION, FORMAT_VERSION, validCiphertext, shortIv)
+        assertInvalidConfiguration { store.load() }
+
+        putStoredConfiguration(FORMAT_VERSION, FORMAT_VERSION, "A".repeat(12001), validIv)
+        assertInvalidConfiguration { store.load() }
+
+        putStoredConfiguration(FORMAT_VERSION, FORMAT_VERSION, validCiphertext, "A".repeat(65))
+        assertInvalidConfiguration { store.load() }
+    }
+
+    @Test
     fun `解密失败或无效明文抛稳定异常`() {
         store.save(DeepSeekConfiguration("deepseek-chat", "key"))
-        cipher.decryptFailure = IllegalStateException("不得泄露的解密错误")
+        cipher.decryptFailure = IllegalStateException("decrypt-secret")
 
-        assertInvalidConfiguration { store.load() }
+        assertInvalidConfiguration("decrypt-secret") { store.load() }
 
         cipher.decryptFailure = null
         cipher.decryptedOverride = byteArrayOf(0xC3.toByte(), 0x28)
@@ -181,6 +229,25 @@ class DeepSeekConfigurationStoreTest {
     }
 
     @Test
+    fun `configuredModelId 校验完整 envelope 但不解密`() {
+        store.save(DeepSeekConfiguration("deepseek-chat", "key"))
+        cipher.decryptFailure = IllegalStateException("must-not-decrypt")
+        cipher.decryptCalls = 0
+
+        preferences().edit().remove(API_KEY_IV).commit()
+        assertInvalidConfiguration { store.configuredModelId() }
+        assertEquals(0, cipher.decryptCalls)
+
+        store.save(DeepSeekConfiguration("deepseek-chat", "key"))
+        preferences().edit().putString(API_KEY_CIPHERTEXT, "%%%").commit()
+        assertInvalidConfiguration { store.configuredModelId() }
+
+        store.save(DeepSeekConfiguration("deepseek-chat", "key"))
+        preferences().edit().putInt(API_KEY_IV, 1).commit()
+        assertInvalidConfiguration { store.configuredModelId() }
+    }
+
+    @Test
     fun `清除配置字段并删除加密密钥`() {
         store.save(DeepSeekConfiguration("deepseek-chat", "key"))
         preferences().edit().putString("unrelated", "kept").commit()
@@ -196,39 +263,101 @@ class DeepSeekConfigurationStoreTest {
     fun `保存或清除提交失败时抛异常并且清除不删除密钥`() {
         val failingContext = CommitFailingContext(context)
         val failingStore = SharedPreferencesDeepSeekConfigurationStore(failingContext, cipher)
+        val oldConfiguration = DeepSeekConfiguration("deepseek-chat", "old-key")
+        store.save(oldConfiguration)
 
         val saveException = assertThrows(ConfigurationStoreException::class.java) {
-            failingStore.save(DeepSeekConfiguration("deepseek-chat", "key"))
+            failingStore.save(DeepSeekConfiguration("deepseek-reasoner", "new-key"))
         }
         assertEquals("无法保存 DeepSeek 配置", saveException.message)
+        assertEquals(oldConfiguration, store.load())
 
-        store.save(DeepSeekConfiguration("deepseek-chat", "key"))
         val clearException = assertThrows(ConfigurationStoreException::class.java) {
             failingStore.clear()
         }
         assertEquals("无法清除 DeepSeek 配置", clearException.message)
         assertEquals(0, cipher.clearKeyCalls)
-        assertTrue(preferences().contains(MODEL_ID))
+        assertEquals(oldConfiguration, store.load())
     }
 
     @Test
     fun `删除密钥失败时 SharedPreferences 已清除并抛稳定异常`() {
         store.save(DeepSeekConfiguration("deepseek-chat", "key"))
-        cipher.clearKeyFailure = IllegalStateException("不得泄露的删除错误")
+        cipher.clearKeyFailure = IllegalStateException("clear-secret")
 
         val exception = assertThrows(ConfigurationStoreException::class.java) {
             store.clear()
         }
 
         assertEquals("无法清除 DeepSeek 配置", exception.message)
+        assertPublicExceptionDoesNotContain(exception, "clear-secret")
         assertNull(store.load())
+    }
+
+    @Test
+    fun `EncryptedSecret 对输入和输出数组均防御性复制`() {
+        val ciphertext = ByteArray(16) { 7 }
+        val iv = ByteArray(12) { 3 }
+        val secret = EncryptedSecret(ciphertext, iv)
+        ciphertext.fill(0)
+        iv.fill(0)
+
+        assertEquals(7, secret.ciphertext[0].toInt())
+        assertEquals(3, secret.iv[0].toInt())
+
+        secret.ciphertext.fill(0)
+        secret.iv.fill(0)
+        assertEquals(7, secret.ciphertext[0].toInt())
+        assertEquals(3, secret.iv[0].toInt())
+    }
+
+    @Test
+    fun `两个 store 并发保存不会产生混合 envelope`() {
+        val otherStore = SharedPreferencesDeepSeekConfigurationStore(context, cipher)
+        val first = DeepSeekConfiguration("deepseek-chat", "first-key")
+        val second = DeepSeekConfiguration("deepseek-reasoner", "second-key")
+        val executor = Executors.newFixedThreadPool(2)
+        val ready = CountDownLatch(2)
+        val start = CountDownLatch(1)
+
+        val firstSave = executor.submit {
+            ready.countDown()
+            start.await()
+            store.save(first)
+        }
+        val secondSave = executor.submit {
+            ready.countDown()
+            start.await()
+            otherStore.save(second)
+        }
+        assertTrue(ready.await(5, TimeUnit.SECONDS))
+        start.countDown()
+        firstSave.get(5, TimeUnit.SECONDS)
+        secondSave.get(5, TimeUnit.SECONDS)
+        executor.shutdownNow()
+
+        val loaded = store.load()
+        assertTrue(loaded == first || loaded == second)
     }
 
     private fun assertInvalidConfiguration(vararg forbiddenText: String, block: () -> Unit) {
         val exception = assertThrows(ConfigurationStoreException::class.java, block)
         assertEquals("DeepSeek 配置无效", exception.message)
+        assertPublicExceptionDoesNotContain(exception, *forbiddenText)
+    }
+
+    private fun assertPublicExceptionDoesNotContain(
+        exception: ConfigurationStoreException,
+        vararg forbiddenText: String,
+    ) {
+        assertNull(exception.cause)
+        val trace = StringWriter().use { output ->
+            PrintWriter(output).use(exception::printStackTrace)
+            output.toString()
+        }
         forbiddenText.forEach { text ->
             assertFalse(exception.message.orEmpty().contains(text))
+            assertFalse(trace.contains(text))
         }
     }
 
@@ -262,13 +391,15 @@ class DeepSeekConfigurationStoreTest {
         override fun encrypt(plaintext: ByteArray): EncryptedSecret {
             encryptCalls += 1
             encryptFailure?.let { throw it }
-            return EncryptedSecret(plaintext.reversedArray(), byteArrayOf(1, 2, 3))
+            val ciphertext = ByteArray(16 + plaintext.size) { 9 }
+            plaintext.reversedArray().copyInto(ciphertext, destinationOffset = 16)
+            return EncryptedSecret(ciphertext, ByteArray(12) { 3 })
         }
 
         override fun decrypt(secret: EncryptedSecret): ByteArray {
             decryptCalls += 1
             decryptFailure?.let { throw it }
-            return decryptedOverride ?: secret.ciphertext.reversedArray()
+            return decryptedOverride ?: secret.ciphertext.copyOfRange(16, secret.ciphertext.size).reversedArray()
         }
 
         override fun clearKey() {
@@ -331,7 +462,10 @@ class DeepSeekConfigurationStoreTest {
             return this
         }
 
-        override fun commit(): Boolean = false
+        override fun commit(): Boolean {
+            delegate.commit()
+            return false
+        }
 
         override fun apply() = delegate.apply()
     }
