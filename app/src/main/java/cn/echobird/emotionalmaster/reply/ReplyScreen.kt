@@ -55,7 +55,8 @@ fun ReplyScreen(
     onPreviewContext: () -> Unit,
     onDismissContextPreview: () -> Unit,
     onGenerateSuggestions: () -> Unit,
-    modelConfigurationLabel: String = "未配置（将使用本地降级）",
+    onUseOfflineSuggestions: () -> Unit = {},
+    modelConfigurationLabel: String = "未配置 DeepSeek",
     onOpenModelSettings: () -> Unit = {},
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -162,6 +163,7 @@ fun ReplyScreen(
             state = state,
             onDismiss = onDismissContextPreview,
             onConfirm = onGenerateSuggestions,
+            onUseOfflineSuggestions = onUseOfflineSuggestions,
         )
     }
 }
@@ -228,6 +230,7 @@ private fun ContextPreviewSheet(
     state: ReplyUiState,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
+    onUseOfflineSuggestions: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
@@ -275,10 +278,21 @@ private fun ContextPreviewSheet(
                         Detail(message.role, message.text)
                     }
                 }
-                if (state.generationError != null) {
+                if (state.onlineFailureMessage != null) {
                     Spacer(Modifier.height(12.dp))
-                    Text(state.generationError, color = MaterialTheme.colorScheme.error)
+                    Text(
+                        "在线生成失败",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Text(state.onlineFailureMessage, color = MaterialTheme.colorScheme.error)
                     Text("可以重试；取消后输入内容仍会保留。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(8.dp))
+                    SecondaryAction(
+                        text = "使用本地建议",
+                        onClick = onUseOfflineSuggestions,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
             }
             Spacer(Modifier.height(16.dp))
@@ -288,7 +302,7 @@ private fun ContextPreviewSheet(
             ) {
                 SecondaryAction("取消", onDismiss, Modifier.weight(1f))
                 PrimaryAction(
-                    text = if (state.generationError == null) "确认生成" else "重试",
+                    text = if (state.onlineFailureMessage == null) "确认生成" else "重试",
                     onClick = onConfirm,
                     modifier = Modifier.weight(1f),
                     loading = state.isGenerating,

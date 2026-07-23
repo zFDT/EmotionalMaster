@@ -38,6 +38,7 @@ import cn.echobird.emotionalmaster.importing.ImportViewModel
 import cn.echobird.emotionalmaster.reply.ReplyScreen
 import cn.echobird.emotionalmaster.reply.ReplyViewModel
 import cn.echobird.emotionalmaster.llm.officialDeepSeekModelCatalog
+import cn.echobird.emotionalmaster.llm.officialDeepSeekReplySuggestionService
 import cn.echobird.emotionalmaster.settings.DeepSeekSettingsScreen
 import cn.echobird.emotionalmaster.settings.DeepSeekSettingsUiState
 import cn.echobird.emotionalmaster.settings.DeepSeekSettingsViewModel
@@ -67,6 +68,9 @@ class MainActivity : ComponentActivity() {
         )
     }
     private val importRepository by lazy { ImportRepository(database) }
+    private val deepSeekConfigurationStore by lazy {
+        SharedPreferencesDeepSeekConfigurationStore(applicationContext)
+    }
 
     private val documentPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(::readDocument)
@@ -77,7 +81,29 @@ class MainActivity : ComponentActivity() {
         val provider = ViewModelProvider(this)
         importViewModel = provider[ImportViewModel::class.java]
         analysisViewModel = provider[AnalysisViewModel::class.java]
-        replyViewModel = provider[ReplyViewModel::class.java]
+        replyViewModel = ViewModelProvider(
+            this,
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    require(modelClass == ReplyViewModel::class.java)
+                    return ReplyViewModel(
+                        serviceFactory = {
+                            deepSeekConfigurationStore.load()?.let { configuration ->
+                                officialDeepSeekReplySuggestionService(
+                                    apiKeyProvider = { configuration.apiKey },
+                                    model = configuration.modelId,
+                                )
+                            }
+                        },
+                        providerLabelProvider = {
+                            deepSeekConfigurationStore.configuredModelId()
+                                ?.let { "DeepSeek · $it" }
+                        },
+                    ) as T
+                }
+            },
+        )[ReplyViewModel::class.java]
         deepSeekSettingsViewModel = ViewModelProvider(
             this,
             object : ViewModelProvider.Factory {
@@ -85,7 +111,7 @@ class MainActivity : ComponentActivity() {
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
                     require(modelClass == DeepSeekSettingsViewModel::class.java)
                     return DeepSeekSettingsViewModel(
-                        SharedPreferencesDeepSeekConfigurationStore(applicationContext),
+                        deepSeekConfigurationStore,
                         officialDeepSeekModelCatalog(),
                     ) as T
                 }
@@ -201,6 +227,10 @@ fun EmotionalMasterFlow(
         }
     }
 
+    LaunchedEffect(settingsState.configuredModelId) {
+        replyViewModel.refreshOnlineProvider()
+    }
+
     Surface(color = MaterialTheme.colorScheme.background) {
         key(screen) {
         when (screen) {
@@ -242,9 +272,10 @@ fun EmotionalMasterFlow(
                 onPreviewContext = replyViewModel::showContextPreview,
                 onDismissContextPreview = replyViewModel::dismissContextPreview,
                 onGenerateSuggestions = replyViewModel::generateSuggestions,
+                onUseOfflineSuggestions = replyViewModel::useOfflineSuggestions,
                 modelConfigurationLabel = settingsState.configuredModelId
                     ?.let { "DeepSeek · $it" }
-                    ?: "未配置（将使用本地降级）",
+                    ?: "未配置 DeepSeek",
                 onOpenModelSettings = { navigate(MvpScreen.DEEPSEEK_SETTINGS) },
                 onBack = { navigate(MvpScreen.ANALYSIS) },
             )

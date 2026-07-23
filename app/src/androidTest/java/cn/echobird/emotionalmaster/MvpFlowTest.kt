@@ -96,12 +96,13 @@ class MvpFlowTest {
         composeRule.onNodeWithText("预览上传内容").performScrollTo().performClick()
 
         composeRule.onNodeWithText("将上传的上下文").assertIsDisplayed()
-        composeRule.onNodeWithText("未配置（将使用本地降级）").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("未配置 DeepSeek").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("context-current-message").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("取消").assertIsDisplayed()
         capture("05-context-preview")
         composeRule.onNodeWithText("确认生成").performClick()
-
+        composeRule.onNodeWithText("在线生成失败").assertIsDisplayed()
+        composeRule.onNodeWithText("使用本地建议").performClick()
         composeRule.onNodeWithText("选择一种回复思路").performScrollTo().assertIsDisplayed()
         capture("06-suggestions")
         composeRule.onAllNodesWithText("复制").assertCountEquals(4)
@@ -274,7 +275,7 @@ class MvpFlowTest {
         composeRule.runOnIdle {
             settingsState = DeepSeekSettingsUiState(success = SettingsSuccess.CLEARED)
         }
-        composeRule.onNodeWithText("未配置（将使用本地降级）").assertIsDisplayed()
+        composeRule.onNodeWithText("未配置 DeepSeek").assertIsDisplayed()
         composeRule.runOnIdle { assertEquals(2, consumeCount) }
         composeRule.onNodeWithText("模型设置").performScrollTo().performClick()
         composeRule.onNodeWithText("DeepSeek 官方服务").assertIsDisplayed()
@@ -283,9 +284,10 @@ class MvpFlowTest {
     @Test
     fun onlineFailureKeepsContextPreviewAndMessage() {
         val viewModel = ReplyViewModel(
-            service = ReplySuggestionService(
+            serviceFactory = { ReplySuggestionService(
                 ModelProvider { throw ModelProviderException.Timeout(SocketTimeoutException("secret")) },
-            ),
+            ) },
+            providerLabelProvider = { "DeepSeek · deepseek-v4-pro" },
         )
         viewModel.start(samplePreview().messages)
         viewModel.updateCurrentMessage("你最近怎么总是这么忙？")
@@ -299,6 +301,7 @@ class MvpFlowTest {
                     onPreviewContext = viewModel::showContextPreview,
                     onDismissContextPreview = viewModel::dismissContextPreview,
                     onGenerateSuggestions = viewModel::generateSuggestions,
+                    onUseOfflineSuggestions = viewModel::useOfflineSuggestions,
                     onBack = {},
                 )
             }
@@ -308,11 +311,118 @@ class MvpFlowTest {
         composeRule.waitUntil(5_000) { !viewModel.uiState.isGenerating }
 
         composeRule.onNodeWithText("将上传的上下文").assertIsDisplayed()
+        composeRule.onNodeWithText("在线生成失败").assertIsDisplayed()
         composeRule.onNodeWithText("连接 DeepSeek 超时").assertIsDisplayed()
+        composeRule.onNodeWithText("使用本地建议").assertIsDisplayed()
+        composeRule.onAllNodesWithText("复制").assertCountEquals(0)
+        composeRule.onNodeWithText("使用本地建议").performClick()
+        composeRule.onAllNodesWithText("复制").assertCountEquals(4)
         assertFalse(viewModel.uiState.isGenerating)
-        assertTrue(viewModel.uiState.showContextPreview)
-        assertTrue(viewModel.uiState.suggestions.isEmpty())
+        assertFalse(viewModel.uiState.showContextPreview)
+        assertEquals(4, viewModel.uiState.suggestions.size)
         assertEquals("你最近怎么总是这么忙？", viewModel.uiState.currentMessage)
+    }
+
+    @Test
+    fun configurationChangeUsesNewestModelForNextRequest() {
+        var modelId = "deepseek-v4-pro"
+        val requestedModels = mutableListOf<String>()
+        val viewModel = ReplyViewModel(
+            serviceFactory = {
+                val requestModel = modelId
+                ReplySuggestionService(
+                    ModelProvider {
+                        requestedModels += requestModel
+                        successfulSuggestions()
+                    },
+                )
+            },
+            providerLabelProvider = { "DeepSeek · $modelId" },
+        )
+        viewModel.start(samplePreview().messages)
+        composeRule.setContent {
+            EmotionalMasterTheme {
+                ReplyScreen(
+                    state = viewModel.uiState,
+                    onCurrentMessageChange = viewModel::updateCurrentMessage,
+                    onPreviewContext = viewModel::showContextPreview,
+                    onDismissContextPreview = viewModel::dismissContextPreview,
+                    onGenerateSuggestions = viewModel::generateSuggestions,
+                    onUseOfflineSuggestions = viewModel::useOfflineSuggestions,
+                    onBack = {},
+                )
+            }
+        }
+        composeRule.waitUntil(5_000) { viewModel.uiState.hasOnlineProvider }
+        composeRule.runOnIdle {
+            viewModel.updateCurrentMessage("第一次")
+            viewModel.showContextPreview()
+            viewModel.generateSuggestions()
+        }
+        composeRule.waitUntil(5_000) { !viewModel.uiState.isGenerating }
+
+        modelId = "deepseek-v4-flash"
+        viewModel.refreshOnlineProvider()
+        composeRule.waitUntil(5_000) {
+            viewModel.uiState.providerLabel == "DeepSeek · deepseek-v4-flash"
+        }
+        composeRule.runOnIdle {
+            viewModel.updateCurrentMessage("第二次")
+            viewModel.showContextPreview()
+            viewModel.generateSuggestions()
+        }
+        composeRule.waitUntil(5_000) {
+            !viewModel.uiState.isGenerating && requestedModels.size == 2
+        }
+
+        assertEquals(listOf("deepseek-v4-pro", "deepseek-v4-flash"), requestedModels)
+    }
+
+    @Test
+    fun unconfiguredProviderDoesNotCreateOnlineServiceOrLeakFailureSecret() {
+        var serviceFactoryCalls = 0
+        val secret = "must-not-leak-secret"
+        val viewModel = ReplyViewModel(
+            serviceFactory = {
+                serviceFactoryCalls += 1
+                throw IllegalStateException(secret)
+            },
+            providerLabelProvider = { null },
+        )
+        viewModel.start(samplePreview().messages)
+        viewModel.updateCurrentMessage("你好")
+        viewModel.showContextPreview()
+        viewModel.generateSuggestions()
+
+        assertEquals(0, serviceFactoryCalls)
+        assertEquals("尚未配置 DeepSeek，请先打开模型设置", viewModel.uiState.onlineFailureMessage)
+        assertFalse(viewModel.uiState.toString().contains(secret))
+    }
+
+    @Test
+    fun damagedConfigurationErrorDoesNotExposeSecret() {
+        val secret = "damaged-store-secret"
+        val viewModel = ReplyViewModel(
+            serviceFactory = { throw IllegalStateException(secret) },
+            providerLabelProvider = { "DeepSeek · deepseek-v4-pro" },
+        )
+        viewModel.start(samplePreview().messages)
+        composeRule.setContent {
+            androidx.compose.material3.Text(viewModel.uiState.providerLabel)
+        }
+        composeRule.waitUntil(5_000) { viewModel.uiState.hasOnlineProvider }
+        composeRule.runOnIdle {
+            viewModel.updateCurrentMessage("你好")
+            viewModel.showContextPreview()
+            viewModel.generateSuggestions()
+        }
+        composeRule.waitUntil(5_000) { !viewModel.uiState.isGenerating }
+
+        assertEquals(
+            "DeepSeek 配置不可用，请重新打开模型设置",
+            viewModel.uiState.onlineFailureMessage,
+        )
+        assertFalse(viewModel.uiState.toString().contains(secret))
     }
 
     private fun capture(name: String) {
@@ -357,4 +467,13 @@ class MvpFlowTest {
         direction = direction,
         text = text,
     )
+
+    private fun successfulSuggestions(): String = """
+        {"suggestions":[
+        {"text":"一","strategy":"甲","intent":"稳住","risk":"低","applicableWhen":"现在"},
+        {"text":"二","strategy":"乙","intent":"澄清","risk":"低","applicableWhen":"现在"},
+        {"text":"三","strategy":"丙","intent":"共情","risk":"低","applicableWhen":"现在"},
+        {"text":"四","strategy":"丁","intent":"边界","risk":"低","applicableWhen":"现在"}
+        ]}
+    """.trimIndent()
 }

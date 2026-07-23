@@ -122,6 +122,39 @@ class OpenAiCompatibleProvider(
     }
 }
 
+/**
+ * 创建仅连接 DeepSeek 官方 Chat Completions 地址的回复服务。
+ */
+fun officialDeepSeekReplySuggestionService(
+    apiKeyProvider: () -> String,
+    model: String,
+): ReplySuggestionService = deepSeekReplySuggestionService(
+    apiKeyProvider = apiKeyProvider,
+    model = model,
+    endpoint = DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT,
+)
+
+internal fun officialDeepSeekReplySuggestionService(
+    apiKeyProvider: () -> String,
+    model: String,
+    endpoint: String,
+): ReplySuggestionService = deepSeekReplySuggestionService(apiKeyProvider, model, endpoint)
+
+private fun deepSeekReplySuggestionService(
+    apiKeyProvider: () -> String,
+    model: String,
+    endpoint: String,
+): ReplySuggestionService = ReplySuggestionService(
+    OpenAiCompatibleProvider(
+        endpoint = endpoint,
+        apiKeyProvider = apiKeyProvider,
+        model = model,
+    ),
+)
+
+private const val DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT =
+    "https://api.deepseek.com/chat/completions"
+
 private class SafeMetadataLoggingInterceptor(
     private val logger: ProviderEventLogger,
     private val nanoTime: () -> Long = System::nanoTime,

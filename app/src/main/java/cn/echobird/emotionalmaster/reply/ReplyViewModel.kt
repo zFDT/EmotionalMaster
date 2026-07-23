@@ -32,24 +32,27 @@ data class ReplyUiState(
     val suggestions: List<ReplySuggestion> = emptyList(),
     val isOfflineFallback: Boolean = false,
     val redactedMessages: List<RedactedPreviewMessage> = emptyList(),
-    val providerLabel: String = "未配置（将使用本地降级）",
+    val providerLabel: String = "未配置 DeepSeek",
+    val hasOnlineProvider: Boolean = false,
     val isGenerating: Boolean = false,
-    val generationError: String? = null,
+    val onlineFailureMessage: String? = null,
 )
 
 class ReplyViewModel(
-    private val service: ReplySuggestionService? = null,
+    private val serviceFactory: () -> ReplySuggestionService? = { null },
+    private val providerLabelProvider: () -> String? = { null },
     private val redactor: ContextRedactor = ContextRedactor(),
     private val fallback: RuleFallback = RuleFallback(),
-    private val providerLabel: String = "未配置（将使用本地降级）",
 ) : ViewModel() {
     var uiState: ReplyUiState by mutableStateOf(ReplyUiState())
         private set
+    private var providerRefreshGeneration = 0
 
     fun start(messages: List<ChatMessage>) {
         if (uiState.messages != messages) {
-            uiState = ReplyUiState(messages = messages, providerLabel = providerLabel)
+            uiState = ReplyUiState(messages = messages)
         }
+        refreshOnlineProvider()
     }
 
     fun updateCurrentMessage(value: String) {
@@ -67,7 +70,7 @@ class ReplyViewModel(
             uiState = uiState.copy(
                 showContextPreview = true,
                 redactedMessages = redacted,
-                generationError = null,
+                onlineFailureMessage = null,
             )
         }
     }
@@ -78,49 +81,72 @@ class ReplyViewModel(
 
     fun generateSuggestions() {
         if (uiState.isGenerating) return
-        uiState = uiState.copy(isGenerating = true, generationError = null)
+        if (!uiState.hasOnlineProvider) {
+            uiState = onlineFailure(MISSING_CONFIGURATION_MESSAGE)
+            return
+        }
+        val messages = requestMessages()
+        uiState = uiState.copy(isGenerating = true, onlineFailureMessage = null)
         viewModelScope.launch {
             try {
-                val result = withContext(Dispatchers.IO) { service?.suggest(requestMessages()) }
+                val result = withContext(Dispatchers.IO) {
+                    serviceFactory()?.suggest(messages)
+                }
                 uiState = when (result) {
-                    null -> {
-                        val suggestions = fallback.suggestions()
-                        uiState.copy(
-                            showContextPreview = false,
-                            suggestions = suggestions.suggestions,
-                            isOfflineFallback = true,
-                            isGenerating = false,
-                        )
-                    }
-
+                    null -> onlineFailure(MISSING_CONFIGURATION_MESSAGE)
                     is OnlineSuccess -> uiState.copy(
                         showContextPreview = false,
                         suggestions = result.suggestions.suggestions,
                         isOfflineFallback = false,
                         isGenerating = false,
+                        onlineFailureMessage = null,
                     )
-
-                    is OnlineFailure -> uiState.copy(
-                        showContextPreview = true,
-                        suggestions = emptyList(),
-                        isOfflineFallback = false,
-                        isGenerating = false,
-                        generationError = result.message,
-                    )
+                    is OnlineFailure -> onlineFailure(result.message)
                 }
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Exception) {
+                uiState = onlineFailure(CONFIGURATION_UNAVAILABLE_MESSAGE)
+            }
+        }
+    }
+
+    fun useOfflineSuggestions() {
+        if (uiState.isGenerating || uiState.onlineFailureMessage == null) return
+        uiState = uiState.copy(
+            showContextPreview = false,
+            suggestions = fallback.suggestions().suggestions,
+            isOfflineFallback = true,
+            onlineFailureMessage = null,
+        )
+    }
+
+    fun refreshOnlineProvider() {
+        val generation = ++providerRefreshGeneration
+        viewModelScope.launch {
+            val label = try {
+                withContext(Dispatchers.IO) { providerLabelProvider() }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                null
+            }
+            if (generation == providerRefreshGeneration) {
                 uiState = uiState.copy(
-                    showContextPreview = true,
-                    suggestions = emptyList(),
-                    isOfflineFallback = false,
-                    isGenerating = false,
-                    generationError = "在线回复暂时不可用",
+                    providerLabel = label ?: "未配置 DeepSeek",
+                    hasOnlineProvider = label != null,
                 )
             }
         }
     }
+
+    private fun onlineFailure(message: String): ReplyUiState = uiState.copy(
+        showContextPreview = true,
+        suggestions = emptyList(),
+        isOfflineFallback = false,
+        isGenerating = false,
+        onlineFailureMessage = message,
+    )
 
     private fun requestMessages(): List<ChatMessage> {
         val lastTimestamp = uiState.messages.maxOfOrNull(ChatMessage::sentAt) ?: Instant.EPOCH
@@ -130,5 +156,10 @@ class ReplyViewModel(
             direction = MessageDirection.INCOMING,
             text = uiState.currentMessage,
         )
+    }
+
+    private companion object {
+        const val MISSING_CONFIGURATION_MESSAGE = "尚未配置 DeepSeek，请先打开模型设置"
+        const val CONFIGURATION_UNAVAILABLE_MESSAGE = "DeepSeek 配置不可用，请重新打开模型设置"
     }
 }
