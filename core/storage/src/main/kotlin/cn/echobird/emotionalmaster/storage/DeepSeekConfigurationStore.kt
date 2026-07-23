@@ -79,10 +79,14 @@ class SharedPreferencesDeepSeekConfigurationStore private constructor(
             throw invalidConfiguration(exception)
         }
         val apiKey = decodeUtf8(plaintext)
-        if (apiKey.isEmpty()) {
+        if (apiKey.isNotBlank().not()) {
             throw invalidConfiguration()
         }
-        return DeepSeekConfiguration(stored.modelId, apiKey)
+        return try {
+            DeepSeekConfiguration(stored.modelId, apiKey)
+        } catch (exception: IllegalArgumentException) {
+            throw invalidConfiguration(exception)
+        }
     }
 
     override fun configuredModelId(): String? {
@@ -97,7 +101,7 @@ class SharedPreferencesDeepSeekConfigurationStore private constructor(
             if (
                 configurationVersion != FORMAT_VERSION ||
                 encryptionVersion != FORMAT_VERSION ||
-                modelId.isNullOrEmpty()
+                modelId.isNullOrBlank()
             ) {
                 throw invalidConfiguration()
             }
@@ -175,7 +179,7 @@ class SharedPreferencesDeepSeekConfigurationStore private constructor(
         if (
             configurationVersion != FORMAT_VERSION ||
             encryptionVersion != FORMAT_VERSION ||
-            modelId.isNullOrEmpty() ||
+            modelId.isNullOrBlank() ||
             ciphertext.isNullOrEmpty() ||
             iv.isNullOrEmpty()
         ) {

@@ -93,6 +93,23 @@ class DeepSeekConfigurationStoreTest {
     }
 
     @Test
+    fun `持久化的空白 modelId 被读取接口稳定拒绝`() {
+        store.save(DeepSeekConfiguration("deepseek-chat", "key"))
+        preferences().edit().putString(MODEL_ID, "   ").commit()
+
+        assertInvalidConfiguration("   ") { store.load() }
+        assertInvalidConfiguration("   ") { store.configuredModelId() }
+    }
+
+    @Test
+    fun `解密得到空白 apiKey 时稳定拒绝且不泄露内容`() {
+        store.save(DeepSeekConfiguration("deepseek-chat", "key"))
+        cipher.decryptedOverride = "   ".toByteArray()
+
+        assertInvalidConfiguration("   ") { store.load() }
+    }
+
+    @Test
     fun `读取无配置返回 null 而部分或损坏配置抛稳定异常`() {
         assertNull(store.load())
 
@@ -207,9 +224,12 @@ class DeepSeekConfigurationStoreTest {
         assertNull(store.load())
     }
 
-    private fun assertInvalidConfiguration(block: () -> Unit) {
+    private fun assertInvalidConfiguration(vararg forbiddenText: String, block: () -> Unit) {
         val exception = assertThrows(ConfigurationStoreException::class.java, block)
         assertEquals("DeepSeek 配置无效", exception.message)
+        forbiddenText.forEach { text ->
+            assertFalse(exception.message.orEmpty().contains(text))
+        }
     }
 
     private fun putStoredConfiguration(
