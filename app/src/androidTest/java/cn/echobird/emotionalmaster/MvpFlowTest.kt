@@ -12,6 +12,9 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import cn.echobird.emotionalmaster.analysis.AnalysisViewModel
 import cn.echobird.emotionalmaster.importing.ImportDocumentPreview
 import cn.echobird.emotionalmaster.importing.ImportViewModel
@@ -19,9 +22,12 @@ import cn.echobird.emotionalmaster.model.ChatMessage
 import cn.echobird.emotionalmaster.model.MessageDirection
 import cn.echobird.emotionalmaster.llm.ModelProvider
 import cn.echobird.emotionalmaster.llm.ModelProviderException
+import cn.echobird.emotionalmaster.llm.AvailableModel
 import cn.echobird.emotionalmaster.llm.ReplySuggestionService
 import cn.echobird.emotionalmaster.reply.ReplyScreen
 import cn.echobird.emotionalmaster.reply.ReplyViewModel
+import cn.echobird.emotionalmaster.settings.DeepSeekSettingsUiState
+import cn.echobird.emotionalmaster.settings.SettingsSuccess
 import cn.echobird.emotionalmaster.ui.EmotionalMasterTheme
 import java.time.Instant
 import java.io.File
@@ -129,6 +135,70 @@ class MvpFlowTest {
         composeRule.onNodeWithText("设备存储暂时不可用").assertIsDisplayed()
         composeRule.onNodeWithText("确认导入").performScrollTo().assertIsDisplayed()
         capture("07-import-save-error")
+    }
+
+    @Test
+    fun configureDeepSeekModelWithoutExposingApiKey() {
+        val importViewModel = ImportViewModel()
+        var settingsState by mutableStateOf(DeepSeekSettingsUiState())
+        var discardCount = 0
+
+        composeRule.setContent {
+            EmotionalMasterTheme {
+                EmotionalMasterFlow(
+                    importViewModel = importViewModel,
+                    analysisViewModel = AnalysisViewModel(),
+                    replyViewModel = ReplyViewModel(),
+                    onChooseDocument = { importViewModel.showPreview(samplePreview()) },
+                    settingsState = settingsState,
+                    onVerifyDeepSeek = {
+                        settingsState = settingsState.copy(
+                            models = listOf(
+                                AvailableModel("deepseek-v4-pro", isDeprecated = false),
+                                AvailableModel("deepseek-chat", isDeprecated = true),
+                            ),
+                            selectedModelId = "deepseek-v4-pro",
+                            canSave = true,
+                        )
+                    },
+                    onSelectDeepSeekModel = { modelId ->
+                        settingsState = settingsState.copy(selectedModelId = modelId)
+                    },
+                    onSaveDeepSeek = {
+                        settingsState = settingsState.copy(
+                            hasSavedConfiguration = true,
+                            configuredModelId = settingsState.selectedModelId,
+                            canSave = false,
+                            success = SettingsSuccess.SAVED,
+                        )
+                    },
+                    onConsumeDeepSeekSuccess = {
+                        settingsState.success.also {
+                            settingsState = settingsState.copy(success = null)
+                        }
+                    },
+                    onDiscardDeepSeekCandidate = { discardCount += 1 },
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("选择聊天文件").performScrollTo().performClick()
+        composeRule.onNodeWithText("确认导入").performScrollTo().performClick()
+        composeRule.onNodeWithText("获取回复建议").performScrollTo().performClick()
+        composeRule.onNodeWithText("模型设置").performScrollTo().performClick()
+        composeRule.onNodeWithText("DeepSeek 官方服务").assertIsDisplayed()
+        composeRule.onNodeWithText("api.deepseek.com").assertIsDisplayed()
+        composeRule.onNodeWithTag("deepseek-api-key").performTextInput("test-key")
+        assertTrue(
+            composeRule.onAllNodesWithText("test-key", useUnmergedTree = true)
+                .fetchSemanticsNodes().isEmpty(),
+        )
+        composeRule.onNodeWithText("验证并获取模型").performScrollTo().performClick()
+        composeRule.onNodeWithText("deepseek-v4-pro").performScrollTo().performClick()
+        composeRule.onNodeWithText("deepseek-chat（已弃用）").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("保存并启用").performScrollTo().performClick()
+        composeRule.onNodeWithText("DeepSeek · deepseek-v4-pro").assertIsDisplayed()
+        assertEquals(1, discardCount)
     }
 
     @Test

@@ -11,6 +11,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -18,6 +20,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.lifecycleScope
 import cn.echobird.emotionalmaster.analysis.AnalysisScreen
 import cn.echobird.emotionalmaster.analysis.AnalysisViewModel
@@ -34,7 +37,13 @@ import cn.echobird.emotionalmaster.importing.ImportUiState
 import cn.echobird.emotionalmaster.importing.ImportViewModel
 import cn.echobird.emotionalmaster.reply.ReplyScreen
 import cn.echobird.emotionalmaster.reply.ReplyViewModel
+import cn.echobird.emotionalmaster.llm.officialDeepSeekModelCatalog
+import cn.echobird.emotionalmaster.settings.DeepSeekSettingsScreen
+import cn.echobird.emotionalmaster.settings.DeepSeekSettingsUiState
+import cn.echobird.emotionalmaster.settings.DeepSeekSettingsViewModel
+import cn.echobird.emotionalmaster.settings.SettingsSuccess
 import cn.echobird.emotionalmaster.storage.AndroidKeystoreDatabaseKeyProvider
+import cn.echobird.emotionalmaster.storage.SharedPreferencesDeepSeekConfigurationStore
 import cn.echobird.emotionalmaster.storage.EmotionalMasterDatabase
 import cn.echobird.emotionalmaster.storage.ImportRepository
 import cn.echobird.emotionalmaster.ui.EmotionalMasterTheme
@@ -48,6 +57,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var importViewModel: ImportViewModel
     private lateinit var analysisViewModel: AnalysisViewModel
     private lateinit var replyViewModel: ReplyViewModel
+    private lateinit var deepSeekSettingsViewModel: DeepSeekSettingsViewModel
 
     private val database by lazy {
         EmotionalMasterDatabase.openEncrypted(
@@ -68,6 +78,19 @@ class MainActivity : ComponentActivity() {
         importViewModel = provider[ImportViewModel::class.java]
         analysisViewModel = provider[AnalysisViewModel::class.java]
         replyViewModel = provider[ReplyViewModel::class.java]
+        deepSeekSettingsViewModel = ViewModelProvider(
+            this,
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    require(modelClass == DeepSeekSettingsViewModel::class.java)
+                    return DeepSeekSettingsViewModel(
+                        SharedPreferencesDeepSeekConfigurationStore(applicationContext),
+                        officialDeepSeekModelCatalog(),
+                    ) as T
+                }
+            },
+        )[DeepSeekSettingsViewModel::class.java]
 
         setContent {
             EmotionalMasterTheme {
@@ -79,6 +102,13 @@ class MainActivity : ComponentActivity() {
                         documentPicker.launch(arrayOf("application/json", "text/plain"))
                     },
                     onImportConfirmed = ::persistImport,
+                    settingsState = deepSeekSettingsViewModel.uiState,
+                    onVerifyDeepSeek = deepSeekSettingsViewModel::verifyAndLoadModels,
+                    onSelectDeepSeekModel = deepSeekSettingsViewModel::selectModel,
+                    onSaveDeepSeek = deepSeekSettingsViewModel::saveVerifiedConfiguration,
+                    onClearDeepSeek = deepSeekSettingsViewModel::clearConfiguration,
+                    onConsumeDeepSeekSuccess = deepSeekSettingsViewModel::consumeSuccess,
+                    onDiscardDeepSeekCandidate = deepSeekSettingsViewModel::discardCandidateConfiguration,
                 )
             }
         }
@@ -125,6 +155,7 @@ private enum class MvpScreen {
     IMPORT,
     ANALYSIS,
     REPLY,
+    DEEPSEEK_SETTINGS,
 }
 
 @Composable
@@ -136,6 +167,13 @@ fun EmotionalMasterFlow(
     onImportConfirmed: (ImportDocumentPreview, (Result<Unit>) -> Unit) -> Unit = { _, completion ->
         completion(Result.success(Unit))
     },
+    settingsState: DeepSeekSettingsUiState = DeepSeekSettingsUiState(),
+    onVerifyDeepSeek: (String?) -> Unit = {},
+    onSelectDeepSeekModel: (String) -> Unit = {},
+    onSaveDeepSeek: () -> Unit = {},
+    onClearDeepSeek: () -> Unit = {},
+    onConsumeDeepSeekSuccess: () -> SettingsSuccess? = { null },
+    onDiscardDeepSeekCandidate: () -> Unit = {},
 ) {
     var screenName by rememberSaveable { mutableStateOf(MvpScreen.IMPORT.name) }
     val screen = MvpScreen.valueOf(screenName)
@@ -145,7 +183,13 @@ fun EmotionalMasterFlow(
     }
 
     BackHandler(enabled = screen != MvpScreen.IMPORT) {
-        navigate(if (screen == MvpScreen.REPLY) MvpScreen.ANALYSIS else MvpScreen.IMPORT)
+        navigate(
+            when (screen) {
+                MvpScreen.DEEPSEEK_SETTINGS -> MvpScreen.REPLY
+                MvpScreen.REPLY -> MvpScreen.ANALYSIS
+                else -> MvpScreen.IMPORT
+            },
+        )
     }
 
     Surface(color = MaterialTheme.colorScheme.background) {
@@ -189,8 +233,31 @@ fun EmotionalMasterFlow(
                 onPreviewContext = replyViewModel::showContextPreview,
                 onDismissContextPreview = replyViewModel::dismissContextPreview,
                 onGenerateSuggestions = replyViewModel::generateSuggestions,
+                modelConfigurationLabel = settingsState.configuredModelId
+                    ?.let { "DeepSeek · $it" }
+                    ?: "未配置（将使用本地降级）",
+                onOpenModelSettings = { navigate(MvpScreen.DEEPSEEK_SETTINGS) },
                 onBack = { navigate(MvpScreen.ANALYSIS) },
             )
+
+            MvpScreen.DEEPSEEK_SETTINGS -> {
+                LaunchedEffect(settingsState.success) {
+                    if (settingsState.success != null && onConsumeDeepSeekSuccess() != null) {
+                        navigate(MvpScreen.REPLY)
+                    }
+                }
+                DisposableEffect(Unit) {
+                    onDispose(onDiscardDeepSeekCandidate)
+                }
+                DeepSeekSettingsScreen(
+                    state = settingsState,
+                    onVerify = onVerifyDeepSeek,
+                    onSelectModel = onSelectDeepSeekModel,
+                    onSave = onSaveDeepSeek,
+                    onClear = onClearDeepSeek,
+                    onBack = { navigate(MvpScreen.REPLY) },
+                )
+            }
         }
         }
     }

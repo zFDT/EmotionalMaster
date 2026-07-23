@@ -55,6 +55,8 @@ fun ReplyScreen(
     onPreviewContext: () -> Unit,
     onDismissContextPreview: () -> Unit,
     onGenerateSuggestions: () -> Unit,
+    modelConfigurationLabel: String = "未配置（将使用本地降级）",
+    onOpenModelSettings: () -> Unit = {},
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -87,6 +89,21 @@ fun ReplyScreen(
                 onBack = onBack,
             )
             Spacer(Modifier.height(24.dp))
+            ParchmentCard {
+                Text("当前模型", fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    modelConfigurationLabel,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                SecondaryAction(
+                    text = "模型设置",
+                    onClick = onOpenModelSettings,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Spacer(Modifier.height(16.dp))
             if (state.suggestions.isEmpty()) {
                 OutlinedTextField(
                     value = state.currentMessage,

@@ -12,6 +12,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
+fun officialDeepSeekModelCatalog(): ModelCatalog = DeepSeekModelCatalog()
+
 class DeepSeekModelCatalog private constructor(
     private val endpoint: HttpUrl,
     private val client: OkHttpClient,
