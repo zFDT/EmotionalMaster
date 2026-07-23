@@ -1,0 +1,277 @@
+package cn.echobird.emotionalmaster.settings
+
+import cn.echobird.emotionalmaster.llm.AvailableModel
+import cn.echobird.emotionalmaster.llm.ModelCatalog
+import cn.echobird.emotionalmaster.llm.ModelCatalogException
+import cn.echobird.emotionalmaster.llm.preferredDeepSeekModel
+import cn.echobird.emotionalmaster.storage.DeepSeekConfiguration
+import cn.echobird.emotionalmaster.storage.DeepSeekConfigurationStore
+import java.util.concurrent.CancellationException
+import java.util.concurrent.locks.ReentrantLock
+
+data class DeepSeekSettingsUiState(
+    val hasSavedConfiguration: Boolean = false,
+    val configuredModelId: String? = null,
+    val models: List<AvailableModel> = emptyList(),
+    val selectedModelId: String? = null,
+    val isLoading: Boolean = false,
+    val canSave: Boolean = false,
+    val errorMessage: String? = null,
+    val operationSucceeded: Boolean = false,
+)
+
+class DeepSeekSettingsController(
+    private val configurationStore: DeepSeekConfigurationStore,
+    private val modelCatalog: ModelCatalog,
+) {
+    private var verifiedApiKey: String? = null
+    private var pendingOperation: Operation? = null
+    private val operationLock = ReentrantLock()
+
+    var state: DeepSeekSettingsUiState = initialState()
+        private set
+
+    fun beginVerification(): Boolean {
+        if (!operationLock.tryLock()) return false
+        return try {
+            begin(Operation.VERIFICATION)
+        } finally {
+            operationLock.unlock()
+        }
+    }
+
+    fun verifyAndLoadModels(candidateApiKey: String?) {
+        if (!operationLock.tryLock()) return
+        try {
+            if (!startOrContinue(Operation.VERIFICATION)) return
+            try {
+                val apiKey = candidateApiKey?.takeIf(String::isNotBlank) ?: loadSavedApiKey()
+                if (apiKey == null) {
+                    verificationFailed(INPUT_REQUIRED_MESSAGE)
+                    return
+                }
+
+                val models = modelCatalog.listModels(apiKey)
+                if (models.isEmpty()) {
+                    verificationFailed(NO_MODELS_MESSAGE)
+                    return
+                }
+
+                verifiedApiKey = apiKey
+                state = state.copy(
+                    models = models,
+                    selectedModelId = preferredDeepSeekModel(models).id,
+                    isLoading = false,
+                    canSave = true,
+                    errorMessage = null,
+                    operationSucceeded = false,
+                )
+            } catch (exception: CancellationException) {
+                finishLoading()
+                throw exception
+            } catch (exception: ModelCatalogException) {
+                verificationFailed(exception.message ?: VERIFY_FAILED_MESSAGE)
+            } catch (_: Exception) {
+                verificationFailed(VERIFY_FAILED_MESSAGE)
+            } finally {
+                pendingOperation = null
+            }
+        } finally {
+            operationLock.unlock()
+        }
+    }
+
+    fun selectModel(modelId: String) {
+        if (!operationLock.tryLock()) return
+        try {
+            if (state.isLoading) return
+            if (state.models.none { it.id == modelId }) {
+                state = state.copy(
+                    canSave = false,
+                    errorMessage = INVALID_MODEL_MESSAGE,
+                    operationSucceeded = false,
+                )
+                return
+            }
+
+            state = state.copy(
+                selectedModelId = modelId,
+                canSave = verifiedApiKey != null,
+                errorMessage = null,
+                operationSucceeded = false,
+            )
+        } finally {
+            operationLock.unlock()
+        }
+    }
+
+    fun beginSaving(): Boolean {
+        if (!operationLock.tryLock()) return false
+        return try {
+            begin(Operation.SAVING, requireVerifiedConfiguration = true)
+        } finally {
+            operationLock.unlock()
+        }
+    }
+
+    fun saveVerifiedConfiguration() {
+        if (!operationLock.tryLock()) return
+        try {
+            if (!startOrContinue(Operation.SAVING, requireVerifiedConfiguration = true)) return
+            val apiKey = verifiedApiKey
+            val modelId = state.selectedModelId?.takeIf { selectedId -> state.models.any { it.id == selectedId } }
+            if (apiKey == null || modelId == null) {
+                finishLoading()
+                return
+            }
+
+            try {
+                configurationStore.save(DeepSeekConfiguration(modelId, apiKey))
+                verifiedApiKey = null
+                state = state.copy(
+                    hasSavedConfiguration = true,
+                    configuredModelId = modelId,
+                    isLoading = false,
+                    canSave = false,
+                    errorMessage = null,
+                    operationSucceeded = true,
+                )
+            } catch (exception: CancellationException) {
+                verifiedApiKey = null
+                finishLoading()
+                throw exception
+            } catch (_: Exception) {
+                verifiedApiKey = null
+                state = state.copy(
+                    isLoading = false,
+                    canSave = false,
+                    errorMessage = SAVE_FAILED_MESSAGE,
+                    operationSucceeded = false,
+                )
+            } finally {
+                pendingOperation = null
+            }
+        } finally {
+            operationLock.unlock()
+        }
+    }
+
+    fun beginClearing(): Boolean {
+        if (!operationLock.tryLock()) return false
+        return try {
+            begin(Operation.CLEARING)
+        } finally {
+            operationLock.unlock()
+        }
+    }
+
+    fun clearConfiguration() {
+        if (!operationLock.tryLock()) return
+        try {
+            if (!startOrContinue(Operation.CLEARING)) return
+            try {
+                configurationStore.clear()
+                verifiedApiKey = null
+                state = DeepSeekSettingsUiState(operationSucceeded = true)
+            } catch (exception: CancellationException) {
+                verifiedApiKey = null
+                finishLoading()
+                throw exception
+            } catch (_: Exception) {
+                verifiedApiKey = null
+                state = state.copy(
+                    isLoading = false,
+                    canSave = false,
+                    errorMessage = CLEAR_FAILED_MESSAGE,
+                    operationSucceeded = false,
+                )
+            } finally {
+                pendingOperation = null
+            }
+        } finally {
+            operationLock.unlock()
+        }
+    }
+
+    private fun initialState(): DeepSeekSettingsUiState = try {
+        configurationStore.configuredModelId()?.let { modelId ->
+            DeepSeekSettingsUiState(
+                hasSavedConfiguration = true,
+                configuredModelId = modelId,
+                selectedModelId = modelId,
+            )
+        } ?: DeepSeekSettingsUiState()
+    } catch (_: Exception) {
+        DeepSeekSettingsUiState(errorMessage = INVALID_SAVED_CONFIGURATION_MESSAGE)
+    }
+
+    private fun begin(operation: Operation, requireVerifiedConfiguration: Boolean = false): Boolean {
+        if (state.isLoading || (requireVerifiedConfiguration && !hasVerifiedConfiguration())) return false
+
+        pendingOperation = operation
+        state = state.copy(
+            isLoading = true,
+            canSave = false,
+            errorMessage = null,
+            operationSucceeded = false,
+        )
+        return true
+    }
+
+    private fun startOrContinue(operation: Operation, requireVerifiedConfiguration: Boolean = false): Boolean {
+        if (state.isLoading && pendingOperation != operation) return false
+        if (!state.isLoading && !begin(operation, requireVerifiedConfiguration)) return false
+        return true
+    }
+
+    private fun hasVerifiedConfiguration(): Boolean =
+        state.canSave &&
+            verifiedApiKey != null &&
+            state.selectedModelId != null &&
+            state.models.any { it.id == state.selectedModelId }
+
+    private fun loadSavedApiKey(): String? {
+        if (!state.hasSavedConfiguration) return null
+        return try {
+            configurationStore.load()?.apiKey
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (_: Exception) {
+            throw SavedConfigurationLoadException()
+        }
+    }
+
+    private fun verificationFailed(message: String) {
+        verifiedApiKey = null
+        state = state.copy(
+            models = emptyList(),
+            selectedModelId = state.configuredModelId,
+            isLoading = false,
+            canSave = false,
+            errorMessage = message,
+            operationSucceeded = false,
+        )
+    }
+
+    private fun finishLoading() {
+        state = state.copy(isLoading = false, canSave = false)
+    }
+
+    private enum class Operation {
+        VERIFICATION,
+        SAVING,
+        CLEARING,
+    }
+
+    private class SavedConfigurationLoadException : RuntimeException()
+
+    private companion object {
+        const val INPUT_REQUIRED_MESSAGE = "请输入 DeepSeek API Key"
+        const val NO_MODELS_MESSAGE = "DeepSeek 未返回可用模型"
+        const val INVALID_MODEL_MESSAGE = "请选择可用的 DeepSeek 模型"
+        const val VERIFY_FAILED_MESSAGE = "无法验证 DeepSeek 配置"
+        const val SAVE_FAILED_MESSAGE = "无法保存 DeepSeek 配置"
+        const val CLEAR_FAILED_MESSAGE = "无法清除 DeepSeek 配置"
+        const val INVALID_SAVED_CONFIGURATION_MESSAGE = "DeepSeek 配置无效"
+    }
+}
