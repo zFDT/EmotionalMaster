@@ -34,6 +34,9 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -290,13 +293,22 @@ private fun ContextPreviewSheet(
                 }
                 if (state.onlineFailureMessage != null) {
                     Spacer(Modifier.height(12.dp))
-                    Text(
-                        "在线生成失败",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    Text(state.onlineFailureMessage, color = MaterialTheme.colorScheme.error)
-                    Text("可以重试；取消后输入内容仍会保留。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Column(
+                        modifier = Modifier.semantics {
+                            liveRegion = LiveRegionMode.Polite
+                        },
+                    ) {
+                        Text(
+                            "在线生成失败",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Text(state.onlineFailureMessage, color = MaterialTheme.colorScheme.error)
+                        Text(
+                            "可以重试；取消后输入内容仍会保留。",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                     SecondaryAction(
                         text = "使用本地建议",

@@ -17,6 +17,7 @@ import cn.echobird.emotionalmaster.model.ReplySuggestion
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -39,15 +40,30 @@ data class ReplyUiState(
     val onlineFailureMessage: String? = null,
 )
 
+class OnlineReplyProvider(
+    val label: String,
+    internal val service: ReplySuggestionService,
+) {
+    init {
+        require(label.isNotBlank()) { "在线模型标签不能为空" }
+    }
+
+    override fun toString(): String = "OnlineReplyProvider(label=$label)"
+}
+
 class ReplyViewModel(
-    private val serviceFactory: () -> ReplySuggestionService? = { null },
-    private val providerLabelProvider: () -> String? = { null },
+    private val providerResolver: () -> OnlineReplyProvider? = { null },
     private val redactor: ContextRedactor = ContextRedactor(),
     private val fallback: RuleFallback = RuleFallback(),
 ) : ViewModel() {
     var uiState: ReplyUiState by mutableStateOf(ReplyUiState())
         private set
     private var providerRefreshGeneration = 0
+    private var resolvedProvider: OnlineReplyProvider? = null
+    private var previewProvider: OnlineReplyProvider? = null
+    private var providerResolutionFailed = false
+    private var requestGeneration = 0
+    private var requestJob: Job? = null
 
     fun start(messages: List<ChatMessage>) {
         if (uiState.messages != messages) {
@@ -57,7 +73,16 @@ class ReplyViewModel(
     }
 
     fun updateCurrentMessage(value: String) {
-        uiState = uiState.copy(currentMessage = value)
+        if (uiState.currentMessage != value) {
+            invalidateOnlineRequest()
+            previewProvider = null
+        }
+        uiState = uiState.copy(
+            currentMessage = value,
+            showContextPreview = false,
+            redactedMessages = emptyList(),
+            onlineFailureMessage = null,
+        )
     }
 
     fun showContextPreview() {
@@ -76,29 +101,45 @@ class ReplyViewModel(
                 redactedMessages = redacted,
                 onlineFailureMessage = null,
             )
+            previewProvider = resolvedProvider
         }
     }
 
     fun dismissContextPreview() {
+        invalidateOnlineRequest()
+        previewProvider = null
         uiState = uiState.copy(showContextPreview = false)
     }
 
     fun generateSuggestions() {
         if (uiState.isGenerating) return
         if (uiState.isResolvingOnlineProvider) return
-        if (!uiState.hasOnlineProvider) {
-            uiState = onlineFailure(MISSING_CONFIGURATION_MESSAGE)
+        val provider = previewProvider
+        if (provider == null) {
+            uiState = onlineFailure(
+                if (providerResolutionFailed) {
+                    CONFIGURATION_UNAVAILABLE_MESSAGE
+                } else {
+                    MISSING_CONFIGURATION_MESSAGE
+                },
+            )
             return
         }
         val messages = requestMessages()
+        val requestToken = ++requestGeneration
         uiState = uiState.copy(isGenerating = true, onlineFailureMessage = null)
-        viewModelScope.launch {
+        requestJob = viewModelScope.launch {
             try {
                 val result = withContext(Dispatchers.IO) {
-                    serviceFactory()?.suggest(messages)
+                    provider.service.suggest(messages)
+                }
+                if (
+                    requestToken != requestGeneration ||
+                    previewProvider !== provider
+                ) {
+                    return@launch
                 }
                 uiState = when (result) {
-                    null -> onlineFailure(MISSING_CONFIGURATION_MESSAGE)
                     is OnlineSuccess -> uiState.copy(
                         showContextPreview = false,
                         suggestions = result.suggestions.suggestions,
@@ -111,7 +152,13 @@ class ReplyViewModel(
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Exception) {
-                uiState = onlineFailure(CONFIGURATION_UNAVAILABLE_MESSAGE)
+                if (requestToken == requestGeneration && previewProvider === provider) {
+                    uiState = onlineFailure(CONFIGURATION_UNAVAILABLE_MESSAGE)
+                }
+            } finally {
+                if (requestToken == requestGeneration) {
+                    requestJob = null
+                }
             }
         }
     }
@@ -127,6 +174,10 @@ class ReplyViewModel(
     }
 
     fun refreshOnlineProvider() {
+        invalidateOnlineRequest()
+        resolvedProvider = null
+        previewProvider = null
+        providerResolutionFailed = false
         val generation = ++providerRefreshGeneration
         uiState = uiState.copy(
             showContextPreview = false,
@@ -136,20 +187,33 @@ class ReplyViewModel(
             onlineFailureMessage = null,
         )
         viewModelScope.launch {
-            val label = try {
-                withContext(Dispatchers.IO) { providerLabelProvider() }
+            var resolutionFailed = false
+            val provider = try {
+                withContext(Dispatchers.IO) { providerResolver() }
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Exception) {
+                resolutionFailed = true
                 null
             }
             if (generation == providerRefreshGeneration) {
+                resolvedProvider = provider
+                providerResolutionFailed = resolutionFailed
                 uiState = uiState.copy(
-                    providerLabel = label ?: "未配置 DeepSeek",
-                    hasOnlineProvider = label != null,
+                    providerLabel = provider?.label ?: "未配置 DeepSeek",
+                    hasOnlineProvider = provider != null,
                     isResolvingOnlineProvider = false,
                 )
             }
+        }
+    }
+
+    private fun invalidateOnlineRequest() {
+        requestGeneration += 1
+        requestJob?.cancel()
+        requestJob = null
+        if (uiState.isGenerating) {
+            uiState = uiState.copy(isGenerating = false)
         }
     }
 

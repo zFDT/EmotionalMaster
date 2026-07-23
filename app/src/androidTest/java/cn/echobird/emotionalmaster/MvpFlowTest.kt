@@ -25,6 +25,7 @@ import cn.echobird.emotionalmaster.llm.ModelProviderException
 import cn.echobird.emotionalmaster.llm.AvailableModel
 import cn.echobird.emotionalmaster.llm.ReplySuggestionService
 import cn.echobird.emotionalmaster.reply.ReplyScreen
+import cn.echobird.emotionalmaster.reply.OnlineReplyProvider
 import cn.echobird.emotionalmaster.reply.ReplyViewModel
 import cn.echobird.emotionalmaster.settings.DeepSeekSettingsUiState
 import cn.echobird.emotionalmaster.settings.SettingsSuccess
@@ -287,10 +288,16 @@ class MvpFlowTest {
     @Test
     fun onlineFailureKeepsContextPreviewAndMessage() {
         val viewModel = ReplyViewModel(
-            serviceFactory = { ReplySuggestionService(
-                ModelProvider { throw ModelProviderException.Timeout(SocketTimeoutException("secret")) },
-            ) },
-            providerLabelProvider = { "DeepSeek · deepseek-v4-pro" },
+            providerResolver = {
+                OnlineReplyProvider(
+                    label = "DeepSeek · deepseek-v4-pro",
+                    service = ReplySuggestionService(
+                        ModelProvider {
+                            throw ModelProviderException.Timeout(SocketTimeoutException("secret"))
+                        },
+                    ),
+                )
+            },
         )
         viewModel.start(samplePreview().messages)
         viewModel.updateCurrentMessage("你最近怎么总是这么忙？")
@@ -332,16 +339,18 @@ class MvpFlowTest {
         var modelId = "deepseek-v4-pro"
         val requestedModels = mutableListOf<String>()
         val viewModel = ReplyViewModel(
-            serviceFactory = {
+            providerResolver = {
                 val requestModel = modelId
-                ReplySuggestionService(
-                    ModelProvider {
-                        requestedModels += requestModel
-                        successfulSuggestions()
-                    },
+                OnlineReplyProvider(
+                    label = "DeepSeek · $requestModel",
+                    service = ReplySuggestionService(
+                        ModelProvider {
+                            requestedModels += requestModel
+                            successfulSuggestions()
+                        },
+                    ),
                 )
             },
-            providerLabelProvider = { "DeepSeek · $modelId" },
         )
         viewModel.start(samplePreview().messages)
         composeRule.setContent {
@@ -357,7 +366,7 @@ class MvpFlowTest {
                 )
             }
         }
-        composeRule.waitUntil(5_000) { viewModel.uiState.hasOnlineProvider }
+        composeRule.waitUntil(5_000) { !viewModel.uiState.isResolvingOnlineProvider }
         composeRule.runOnIdle {
             viewModel.updateCurrentMessage("第一次")
             viewModel.showContextPreview()
@@ -384,14 +393,13 @@ class MvpFlowTest {
 
     @Test
     fun unconfiguredProviderDoesNotCreateOnlineServiceOrLeakFailureSecret() {
-        var serviceFactoryCalls = 0
+        var providerResolverCalls = 0
         val secret = "must-not-leak-secret"
         val viewModel = ReplyViewModel(
-            serviceFactory = {
-                serviceFactoryCalls += 1
-                throw IllegalStateException(secret)
+            providerResolver = {
+                providerResolverCalls += 1
+                null
             },
-            providerLabelProvider = { null },
         )
         viewModel.start(samplePreview().messages)
         composeRule.setContent {
@@ -404,7 +412,7 @@ class MvpFlowTest {
             viewModel.generateSuggestions()
         }
 
-        assertEquals(0, serviceFactoryCalls)
+        assertEquals(1, providerResolverCalls)
         assertEquals("尚未配置 DeepSeek，请先打开模型设置", viewModel.uiState.onlineFailureMessage)
         assertFalse(viewModel.uiState.toString().contains(secret))
     }
@@ -413,14 +421,13 @@ class MvpFlowTest {
     fun damagedConfigurationErrorDoesNotExposeSecret() {
         val secret = "damaged-store-secret"
         val viewModel = ReplyViewModel(
-            serviceFactory = { throw IllegalStateException(secret) },
-            providerLabelProvider = { "DeepSeek · deepseek-v4-pro" },
+            providerResolver = { throw IllegalStateException(secret) },
         )
         viewModel.start(samplePreview().messages)
         composeRule.setContent {
             androidx.compose.material3.Text(viewModel.uiState.providerLabel)
         }
-        composeRule.waitUntil(5_000) { viewModel.uiState.hasOnlineProvider }
+        composeRule.waitUntil(5_000) { !viewModel.uiState.isResolvingOnlineProvider }
         composeRule.runOnIdle {
             viewModel.updateCurrentMessage("你好")
             viewModel.showContextPreview()
@@ -440,17 +447,17 @@ class MvpFlowTest {
         val releaseResolution = CountDownLatch(1)
         var onlineCalls = 0
         val viewModel = ReplyViewModel(
-            serviceFactory = {
-                ReplySuggestionService(
-                    ModelProvider {
-                        onlineCalls += 1
-                        successfulSuggestions()
-                    },
-                )
-            },
-            providerLabelProvider = {
+            providerResolver = {
                 check(releaseResolution.await(5, TimeUnit.SECONDS))
-                "DeepSeek · deepseek-v4-pro"
+                OnlineReplyProvider(
+                    label = "DeepSeek · deepseek-v4-pro",
+                    service = ReplySuggestionService(
+                        ModelProvider {
+                            onlineCalls += 1
+                            successfulSuggestions()
+                        },
+                    ),
+                )
             },
         )
         viewModel.start(samplePreview().messages)
@@ -483,14 +490,20 @@ class MvpFlowTest {
         val firstResolutionFinished = CountDownLatch(1)
         val resolutionCount = AtomicInteger()
         val viewModel = ReplyViewModel(
-            providerLabelProvider = {
+            providerResolver = {
                 if (resolutionCount.incrementAndGet() == 1) {
                     firstResolutionStarted.countDown()
                     check(releaseFirstResolution.await(5, TimeUnit.SECONDS))
                     firstResolutionFinished.countDown()
-                    "DeepSeek · stale-model"
+                    OnlineReplyProvider(
+                        "DeepSeek · stale-model",
+                        ReplySuggestionService(ModelProvider { successfulSuggestions() }),
+                    )
                 } else {
-                    "DeepSeek · newest-model"
+                    OnlineReplyProvider(
+                        "DeepSeek · newest-model",
+                        ReplySuggestionService(ModelProvider { successfulSuggestions() }),
+                    )
                 }
             },
         )
@@ -510,6 +523,62 @@ class MvpFlowTest {
 
         assertEquals("DeepSeek · newest-model", viewModel.uiState.providerLabel)
         assertFalse(viewModel.uiState.isResolvingOnlineProvider)
+    }
+
+    @Test
+    fun dismissInvalidatesRunningOnlineRequest() {
+        verifyRunningRequestInvalidated(ReplyViewModel::dismissContextPreview)
+    }
+
+    @Test
+    fun inputChangeInvalidatesRunningOnlineRequest() {
+        verifyRunningRequestInvalidated { it.updateCurrentMessage("新的输入") }
+    }
+
+    @Test
+    fun providerRefreshInvalidatesRunningOnlineRequest() {
+        verifyRunningRequestInvalidated(ReplyViewModel::refreshOnlineProvider)
+    }
+
+    private fun verifyRunningRequestInvalidated(invalidate: (ReplyViewModel) -> Unit) {
+        val requestStarted = CountDownLatch(1)
+        val releaseRequest = CountDownLatch(1)
+        val requestFinished = CountDownLatch(1)
+        val viewModel = ReplyViewModel(
+            providerResolver = {
+                OnlineReplyProvider(
+                    "DeepSeek · deepseek-v4-pro",
+                    ReplySuggestionService(
+                        ModelProvider {
+                            requestStarted.countDown()
+                            check(releaseRequest.await(5, TimeUnit.SECONDS))
+                            requestFinished.countDown()
+                            successfulSuggestions()
+                        },
+                    ),
+                )
+            },
+        )
+        viewModel.start(samplePreview().messages)
+        composeRule.setContent {
+            androidx.compose.material3.Text(viewModel.uiState.providerLabel)
+        }
+        composeRule.waitUntil(5_000) { !viewModel.uiState.isResolvingOnlineProvider }
+        composeRule.runOnIdle {
+            viewModel.updateCurrentMessage("原始输入")
+            viewModel.showContextPreview()
+            viewModel.generateSuggestions()
+        }
+        assertTrue(requestStarted.await(5, TimeUnit.SECONDS))
+
+        composeRule.runOnIdle { invalidate(viewModel) }
+        releaseRequest.countDown()
+        assertTrue(requestFinished.await(5, TimeUnit.SECONDS))
+        composeRule.waitForIdle()
+
+        assertTrue(viewModel.uiState.suggestions.isEmpty())
+        assertFalse(viewModel.uiState.isGenerating)
+        assertEquals(null, viewModel.uiState.onlineFailureMessage)
     }
 
     private fun capture(name: String) {

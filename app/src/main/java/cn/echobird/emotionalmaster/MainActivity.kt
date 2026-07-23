@@ -37,6 +37,7 @@ import cn.echobird.emotionalmaster.importing.ImportUiState
 import cn.echobird.emotionalmaster.importing.ImportViewModel
 import cn.echobird.emotionalmaster.reply.ReplyScreen
 import cn.echobird.emotionalmaster.reply.ReplyViewModel
+import cn.echobird.emotionalmaster.reply.OnlineReplyProvider
 import cn.echobird.emotionalmaster.llm.officialDeepSeekModelCatalog
 import cn.echobird.emotionalmaster.llm.officialDeepSeekReplySuggestionService
 import cn.echobird.emotionalmaster.settings.DeepSeekSettingsScreen
@@ -88,17 +89,16 @@ class MainActivity : ComponentActivity() {
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
                     require(modelClass == ReplyViewModel::class.java)
                     return ReplyViewModel(
-                        serviceFactory = {
+                        providerResolver = {
                             deepSeekConfigurationStore.load()?.let { configuration ->
-                                officialDeepSeekReplySuggestionService(
-                                    apiKeyProvider = { configuration.apiKey },
-                                    model = configuration.modelId,
+                                OnlineReplyProvider(
+                                    label = "DeepSeek · ${configuration.modelId}",
+                                    service = officialDeepSeekReplySuggestionService(
+                                        apiKeyProvider = { configuration.apiKey },
+                                        model = configuration.modelId,
+                                    ),
                                 )
                             }
-                        },
-                        providerLabelProvider = {
-                            deepSeekConfigurationStore.configuredModelId()
-                                ?.let { "DeepSeek · $it" }
                         },
                     ) as T
                 }
