@@ -24,6 +24,7 @@ data class DeepSeekConfiguration(
         require(modelId.isNotBlank()) { "DeepSeek 模型标识不能为空" }
         require(modelId.length <= MAX_MODEL_ID_LENGTH) { "DeepSeek 模型标识过长" }
         require(apiKey.isNotBlank()) { "DeepSeek API Key 不能为空" }
+        require(apiKey.length <= MAX_API_KEY_BYTES) { "DeepSeek API Key 长度无效" }
         val encodedApiKey = requireNotNull(strictUtf8Bytes(apiKey)) { "DeepSeek API Key 无效" }
         try {
             require(encodedApiKey.size in 1..MAX_API_KEY_BYTES) { "DeepSeek API Key 长度无效" }
@@ -138,7 +139,8 @@ class SharedPreferencesDeepSeekConfigurationStore private constructor(
         if (
             configuration.modelId.isNotBlank().not() ||
             configuration.modelId.length > MAX_MODEL_ID_LENGTH ||
-            configuration.apiKey.isNotBlank().not()
+            configuration.apiKey.isNotBlank().not() ||
+            configuration.apiKey.length > MAX_API_KEY_BYTES
         ) {
             throw saveFailure()
         }
@@ -344,7 +346,7 @@ internal class AndroidKeystoreSecretCipher : SecretCipher {
         SharedPreferencesDeepSeekConfigurationStore.processLock,
     ) {
         Cipher.getInstance(TRANSFORMATION).run {
-            init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(GCM_TAG_BITS, secret.iv))
+            init(Cipher.DECRYPT_MODE, getExistingKey(), GCMParameterSpec(GCM_TAG_BITS, secret.iv))
             doFinal(secret.ciphertext)
         }
     }
@@ -375,6 +377,12 @@ internal class AndroidKeystoreSecretCipher : SecretCipher {
         }
     }
 
+    private fun getExistingKey(): SecretKey {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        return keyStore.getKey(KEY_ALIAS, null) as? SecretKey
+            ?: throw IllegalStateException("DeepSeek API 密钥不可用")
+    }
+
     private companion object {
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val KEY_ALIAS = "emotional-master-deepseek-api-key"
@@ -383,14 +391,19 @@ internal class AndroidKeystoreSecretCipher : SecretCipher {
     }
 }
 
-private fun strictUtf8Bytes(value: String): ByteArray? = try {
-    val buffer = StandardCharsets.UTF_8.newEncoder()
-        .onMalformedInput(CodingErrorAction.REPORT)
-        .onUnmappableCharacter(CodingErrorAction.REPORT)
-        .encode(CharBuffer.wrap(value))
-    ByteArray(buffer.remaining()).also(buffer::get)
-} catch (exception: CharacterCodingException) {
-    null
+private fun strictUtf8Bytes(value: String): ByteArray? {
+    var buffer: ByteBuffer? = null
+    return try {
+        buffer = StandardCharsets.UTF_8.newEncoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .encode(CharBuffer.wrap(value))
+        ByteArray(buffer.remaining()).also(buffer::get)
+    } catch (exception: CharacterCodingException) {
+        null
+    } finally {
+        buffer?.takeIf(ByteBuffer::hasArray)?.array()?.fill(0)
+    }
 }
 
 private const val MAX_MODEL_ID_LENGTH = 128

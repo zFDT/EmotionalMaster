@@ -9,6 +9,7 @@ import java.util.Base64
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -119,6 +120,17 @@ class DeepSeekConfigurationStoreTest {
         assertThrows(IllegalArgumentException::class.java) {
             DeepSeekConfiguration("model", "k".repeat(4097))
         }
+        assertThrows(IllegalArgumentException::class.java) {
+            DeepSeekConfiguration("model", "k".repeat(100_000))
+        }
+    }
+
+    @Test
+    fun `Keystore cipher 将读取现有密钥与创建密钥分开`() {
+        val methodNames = AndroidKeystoreSecretCipher::class.java.declaredMethods.map { it.name }
+
+        assertTrue(methodNames.contains("getExistingKey"))
+        assertTrue(methodNames.contains("getOrCreateKey"))
     }
 
     @Test
@@ -340,6 +352,37 @@ class DeepSeekConfigurationStoreTest {
         assertTrue(loaded == first || loaded == second)
     }
 
+    @Test
+    fun `共享锁阻止第二个 store 在第一个加密完成前进入 cipher`() {
+        val blockingCipher = BlockingTestCipher()
+        val firstStore = SharedPreferencesDeepSeekConfigurationStore(context, blockingCipher)
+        val secondStore = SharedPreferencesDeepSeekConfigurationStore(context, blockingCipher)
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val firstSave = executor.submit {
+                firstStore.save(DeepSeekConfiguration("deepseek-chat", "first-key"))
+            }
+            assertTrue(blockingCipher.firstEncryptEntered.await(5, TimeUnit.SECONDS))
+
+            val secondSave = executor.submit {
+                secondStore.save(DeepSeekConfiguration("deepseek-reasoner", "second-key"))
+            }
+            assertFalse(blockingCipher.secondEncryptEntered.await(300, TimeUnit.MILLISECONDS))
+
+            blockingCipher.releaseFirstEncrypt.countDown()
+            firstSave.get(5, TimeUnit.SECONDS)
+            secondSave.get(5, TimeUnit.SECONDS)
+            assertEquals(2, blockingCipher.encryptCalls.get())
+            assertTrue(firstStore.load() in setOf(
+                DeepSeekConfiguration("deepseek-chat", "first-key"),
+                DeepSeekConfiguration("deepseek-reasoner", "second-key"),
+            ))
+        } finally {
+            blockingCipher.releaseFirstEncrypt.countDown()
+            executor.shutdownNow()
+        }
+    }
+
     private fun assertInvalidConfiguration(vararg forbiddenText: String, block: () -> Unit) {
         val exception = assertThrows(ConfigurationStoreException::class.java, block)
         assertEquals("DeepSeek 配置无效", exception.message)
@@ -406,6 +449,32 @@ class DeepSeekConfigurationStoreTest {
             clearKeyCalls += 1
             clearKeyFailure?.let { throw it }
         }
+    }
+
+    private class BlockingTestCipher : SecretCipher {
+        val encryptCalls = AtomicInteger()
+        val firstEncryptEntered = CountDownLatch(1)
+        val secondEncryptEntered = CountDownLatch(1)
+        val releaseFirstEncrypt = CountDownLatch(1)
+
+        override fun encrypt(plaintext: ByteArray): EncryptedSecret {
+            when (encryptCalls.incrementAndGet()) {
+                1 -> {
+                    firstEncryptEntered.countDown()
+                    check(releaseFirstEncrypt.await(5, TimeUnit.SECONDS))
+                }
+
+                2 -> secondEncryptEntered.countDown()
+            }
+            val ciphertext = ByteArray(16 + plaintext.size) { 9 }
+            plaintext.reversedArray().copyInto(ciphertext, destinationOffset = 16)
+            return EncryptedSecret(ciphertext, ByteArray(12) { 3 })
+        }
+
+        override fun decrypt(secret: EncryptedSecret): ByteArray =
+            secret.ciphertext.copyOfRange(16, secret.ciphertext.size).reversedArray()
+
+        override fun clearKey() = Unit
     }
 
     private class CommitFailingContext(base: Context) : ContextWrapper(base) {
