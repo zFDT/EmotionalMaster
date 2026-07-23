@@ -34,6 +34,7 @@ data class ReplyUiState(
     val redactedMessages: List<RedactedPreviewMessage> = emptyList(),
     val providerLabel: String = "未配置 DeepSeek",
     val hasOnlineProvider: Boolean = false,
+    val isResolvingOnlineProvider: Boolean = true,
     val isGenerating: Boolean = false,
     val onlineFailureMessage: String? = null,
 )
@@ -60,7 +61,10 @@ class ReplyViewModel(
     }
 
     fun showContextPreview() {
-        if (uiState.currentMessage.isNotBlank()) {
+        if (
+            uiState.currentMessage.isNotBlank() &&
+            !uiState.isResolvingOnlineProvider
+        ) {
             val redacted = redactor.redact(requestMessages()).messages.map { message ->
                 RedactedPreviewMessage(
                     role = if (message.role == ConversationRole.SELF) "我" else "对方",
@@ -81,6 +85,7 @@ class ReplyViewModel(
 
     fun generateSuggestions() {
         if (uiState.isGenerating) return
+        if (uiState.isResolvingOnlineProvider) return
         if (!uiState.hasOnlineProvider) {
             uiState = onlineFailure(MISSING_CONFIGURATION_MESSAGE)
             return
@@ -123,6 +128,13 @@ class ReplyViewModel(
 
     fun refreshOnlineProvider() {
         val generation = ++providerRefreshGeneration
+        uiState = uiState.copy(
+            showContextPreview = false,
+            providerLabel = RESOLVING_CONFIGURATION_LABEL,
+            hasOnlineProvider = false,
+            isResolvingOnlineProvider = true,
+            onlineFailureMessage = null,
+        )
         viewModelScope.launch {
             val label = try {
                 withContext(Dispatchers.IO) { providerLabelProvider() }
@@ -135,6 +147,7 @@ class ReplyViewModel(
                 uiState = uiState.copy(
                     providerLabel = label ?: "未配置 DeepSeek",
                     hasOnlineProvider = label != null,
+                    isResolvingOnlineProvider = false,
                 )
             }
         }
@@ -161,5 +174,6 @@ class ReplyViewModel(
     private companion object {
         const val MISSING_CONFIGURATION_MESSAGE = "尚未配置 DeepSeek，请先打开模型设置"
         const val CONFIGURATION_UNAVAILABLE_MESSAGE = "DeepSeek 配置不可用，请重新打开模型设置"
+        const val RESOLVING_CONFIGURATION_LABEL = "正在读取模型配置"
     }
 }

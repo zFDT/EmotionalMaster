@@ -94,7 +94,11 @@ fun ReplyScreen(
                 Text("当前模型", fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    modelConfigurationLabel,
+                    if (state.isResolvingOnlineProvider) {
+                        "正在读取模型配置"
+                    } else {
+                        modelConfigurationLabel
+                    },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(12.dp))
@@ -125,9 +129,15 @@ fun ReplyScreen(
                 PrivacyNote("下一步确认后，脱敏上下文才会发送给模型服务。")
                 Spacer(Modifier.height(24.dp))
                 PrimaryAction(
-                    text = "预览上传内容",
+                    text = if (state.isResolvingOnlineProvider) {
+                        "正在读取模型配置"
+                    } else {
+                        "预览上传内容"
+                    },
                     onClick = onPreviewContext,
-                    enabled = state.currentMessage.isNotBlank(),
+                    enabled = state.currentMessage.isNotBlank() &&
+                        !state.isResolvingOnlineProvider,
+                    loading = state.isResolvingOnlineProvider,
                 )
             } else {
                 if (state.isOfflineFallback) {

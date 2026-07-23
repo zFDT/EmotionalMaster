@@ -32,6 +32,9 @@ import cn.echobird.emotionalmaster.ui.EmotionalMasterTheme
 import java.time.Instant
 import java.io.File
 import java.net.SocketTimeoutException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.espresso.Espresso.pressBack
 import org.junit.Assert.assertEquals
@@ -291,7 +294,6 @@ class MvpFlowTest {
         )
         viewModel.start(samplePreview().messages)
         viewModel.updateCurrentMessage("你最近怎么总是这么忙？")
-        viewModel.showContextPreview()
 
         composeRule.setContent {
             EmotionalMasterTheme {
@@ -306,6 +308,8 @@ class MvpFlowTest {
                 )
             }
         }
+        composeRule.waitUntil(5_000) { !viewModel.uiState.isResolvingOnlineProvider }
+        composeRule.runOnIdle(viewModel::showContextPreview)
 
         composeRule.onNodeWithText("确认生成").performClick()
         composeRule.waitUntil(5_000) { !viewModel.uiState.isGenerating }
@@ -390,9 +394,15 @@ class MvpFlowTest {
             providerLabelProvider = { null },
         )
         viewModel.start(samplePreview().messages)
-        viewModel.updateCurrentMessage("你好")
-        viewModel.showContextPreview()
-        viewModel.generateSuggestions()
+        composeRule.setContent {
+            androidx.compose.material3.Text(viewModel.uiState.providerLabel)
+        }
+        composeRule.waitUntil(5_000) { !viewModel.uiState.isResolvingOnlineProvider }
+        composeRule.runOnIdle {
+            viewModel.updateCurrentMessage("你好")
+            viewModel.showContextPreview()
+            viewModel.generateSuggestions()
+        }
 
         assertEquals(0, serviceFactoryCalls)
         assertEquals("尚未配置 DeepSeek，请先打开模型设置", viewModel.uiState.onlineFailureMessage)
@@ -423,6 +433,83 @@ class MvpFlowTest {
             viewModel.uiState.onlineFailureMessage,
         )
         assertFalse(viewModel.uiState.toString().contains(secret))
+    }
+
+    @Test
+    fun resolvingConfigurationCannotBeMistakenForMissingConfiguration() {
+        val releaseResolution = CountDownLatch(1)
+        var onlineCalls = 0
+        val viewModel = ReplyViewModel(
+            serviceFactory = {
+                ReplySuggestionService(
+                    ModelProvider {
+                        onlineCalls += 1
+                        successfulSuggestions()
+                    },
+                )
+            },
+            providerLabelProvider = {
+                check(releaseResolution.await(5, TimeUnit.SECONDS))
+                "DeepSeek · deepseek-v4-pro"
+            },
+        )
+        viewModel.start(samplePreview().messages)
+        viewModel.updateCurrentMessage("你好")
+
+        assertTrue(viewModel.uiState.isResolvingOnlineProvider)
+        viewModel.showContextPreview()
+        viewModel.generateSuggestions()
+        assertFalse(viewModel.uiState.showContextPreview)
+        assertEquals(null, viewModel.uiState.onlineFailureMessage)
+        assertEquals(0, onlineCalls)
+
+        releaseResolution.countDown()
+        composeRule.setContent {
+            androidx.compose.material3.Text(viewModel.uiState.providerLabel)
+        }
+        composeRule.waitUntil(5_000) { !viewModel.uiState.isResolvingOnlineProvider }
+        viewModel.showContextPreview()
+        viewModel.generateSuggestions()
+        composeRule.waitUntil(5_000) { !viewModel.uiState.isGenerating }
+
+        assertEquals("DeepSeek · deepseek-v4-pro", viewModel.uiState.providerLabel)
+        assertEquals(1, onlineCalls)
+    }
+
+    @Test
+    fun staleProviderResolutionCannotOverwriteNewGeneration() {
+        val firstResolutionStarted = CountDownLatch(1)
+        val releaseFirstResolution = CountDownLatch(1)
+        val firstResolutionFinished = CountDownLatch(1)
+        val resolutionCount = AtomicInteger()
+        val viewModel = ReplyViewModel(
+            providerLabelProvider = {
+                if (resolutionCount.incrementAndGet() == 1) {
+                    firstResolutionStarted.countDown()
+                    check(releaseFirstResolution.await(5, TimeUnit.SECONDS))
+                    firstResolutionFinished.countDown()
+                    "DeepSeek · stale-model"
+                } else {
+                    "DeepSeek · newest-model"
+                }
+            },
+        )
+        viewModel.start(samplePreview().messages)
+        assertTrue(firstResolutionStarted.await(5, TimeUnit.SECONDS))
+
+        viewModel.refreshOnlineProvider()
+        composeRule.setContent {
+            androidx.compose.material3.Text(viewModel.uiState.providerLabel)
+        }
+        composeRule.waitUntil(5_000) {
+            viewModel.uiState.providerLabel == "DeepSeek · newest-model"
+        }
+        releaseFirstResolution.countDown()
+        assertTrue(firstResolutionFinished.await(5, TimeUnit.SECONDS))
+        composeRule.waitForIdle()
+
+        assertEquals("DeepSeek · newest-model", viewModel.uiState.providerLabel)
+        assertFalse(viewModel.uiState.isResolvingOnlineProvider)
     }
 
     private fun capture(name: String) {
