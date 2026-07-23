@@ -69,7 +69,7 @@ class DeepSeekSettingsControllerTest {
             FakeStore(metadataFailure = CancellationException("initialization-secret")),
             FakeCatalog(),
         )
-        assertTrue(controller.beginInitialization())
+        assertTrue(controller.beginInitialization() != null)
 
         assertThrows(CancellationException::class.java) {
             controller.initializeMetadata()
@@ -329,8 +329,8 @@ class DeepSeekSettingsControllerTest {
             val first = executor.submit { controller.verifyAndLoadModels("first-secret") }
             assertTrue(catalog.firstCallEntered.await(1, TimeUnit.SECONDS))
 
-            val duplicate = executor.submit<Boolean> { controller.beginVerification() }
-            assertFalse(duplicate.get(1, TimeUnit.SECONDS))
+            val duplicate = executor.submit<Long?> { controller.beginVerification() }
+            assertNull(duplicate.get(1, TimeUnit.SECONDS))
 
             catalog.releaseFirstCall.countDown()
             first.get(1, TimeUnit.SECONDS)
@@ -384,6 +384,63 @@ class DeepSeekSettingsControllerTest {
     }
 
     @Test
+    fun `丢弃候选不会等待阻塞验证且旧 worker 不得回写`() {
+        val catalog = BlockingModelCatalog()
+        val controller = DeepSeekSettingsController(FakeStore(), catalog)
+        val executor = Executors.newFixedThreadPool(2)
+        val discardReturned = CountDownLatch(1)
+        try {
+            controller.beginVerification()
+            val worker = executor.submit { controller.verifyAndLoadModels("candidate-secret") }
+            assertTrue(catalog.callEntered.await(1, TimeUnit.SECONDS))
+
+            val discard = executor.submit {
+                controller.discardCandidateConfiguration()
+                discardReturned.countDown()
+            }
+            assertTrue(discardReturned.await(200, TimeUnit.MILLISECONDS))
+            assertFalse(controller.state.isLoading)
+            assertTrue(controller.state.models.isEmpty())
+            assertFalse(controller.state.canSave)
+
+            catalog.releaseCall.countDown()
+            discard.get(1, TimeUnit.SECONDS)
+            worker.get(1, TimeUnit.SECONDS)
+            assertTrue(controller.state.models.isEmpty())
+            assertFalse(controller.state.canSave)
+        } finally {
+            catalog.releaseCall.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `陈旧初始化结果不得覆盖较新验证状态`() {
+        val store = BlockingMetadataStore()
+        val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("new-model"))))
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val initializationToken = controller.beginInitialization()!!
+            val initialization = executor.submit { controller.initializeMetadata(initializationToken) }
+            assertTrue(store.readEntered.await(1, TimeUnit.SECONDS))
+
+            controller.discardCandidateConfiguration()
+            controller.verifyAndLoadModels("candidate-secret")
+            assertEquals("new-model", controller.state.selectedModelId)
+            assertTrue(controller.state.canSave)
+
+            store.releaseRead.countDown()
+            initialization.get(1, TimeUnit.SECONDS)
+            assertEquals("new-model", controller.state.selectedModelId)
+            assertTrue(controller.state.canSave)
+            assertFalse(controller.state.hasSavedConfiguration)
+        } finally {
+            store.releaseRead.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun `丢弃候选配置后无法保存且不保留模型`() {
         val store = FakeStore(configuration = DeepSeekConfiguration("saved-model", "saved-secret"))
         val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("candidate-model"))))
@@ -420,7 +477,7 @@ class DeepSeekSettingsControllerTest {
     private fun model(id: String) = AvailableModel(id, isDeprecated = false)
 
     private fun initialize(controller: DeepSeekSettingsController) {
-        assertTrue(controller.beginInitialization())
+        assertTrue(controller.beginInitialization() != null)
         controller.initializeMetadata()
     }
 
@@ -509,5 +566,33 @@ class DeepSeekSettingsControllerTest {
             1 -> listOf(AvailableModel("first-model", isDeprecated = false))
             else -> throw CancellationException("cancel-secret")
         }
+    }
+
+    private class BlockingModelCatalog : ModelCatalog {
+        val callEntered = CountDownLatch(1)
+        val releaseCall = CountDownLatch(1)
+
+        override fun listModels(apiKey: String): List<AvailableModel> {
+            callEntered.countDown()
+            check(releaseCall.await(1, TimeUnit.SECONDS))
+            return listOf(AvailableModel("late-model", isDeprecated = false))
+        }
+    }
+
+    private class BlockingMetadataStore : DeepSeekConfigurationStore {
+        val readEntered = CountDownLatch(1)
+        val releaseRead = CountDownLatch(1)
+
+        override fun load(): DeepSeekConfiguration? = null
+
+        override fun configuredModelId(): String? {
+            readEntered.countDown()
+            check(releaseRead.await(1, TimeUnit.SECONDS))
+            return "stale-model"
+        }
+
+        override fun save(configuration: DeepSeekConfiguration) = Unit
+
+        override fun clear() = Unit
     }
 }

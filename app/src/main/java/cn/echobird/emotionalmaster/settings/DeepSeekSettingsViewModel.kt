@@ -27,21 +27,22 @@ class DeepSeekSettingsViewModel(
         private set
 
     private var operationJob: Job? = null
+    private var activeToken: Long? = null
 
     init {
         initializeMetadata()
     }
 
     private fun initializeMetadata() {
-        if (!controller.beginInitialization()) return
+        val token = controller.beginInitialization() ?: return
         publishState()
-        launchOperation(controller::initializeMetadata)
+        launchOperation(token, controller::initializeMetadata)
     }
 
     fun verifyAndLoadModels(candidateApiKey: String?) {
-        if (!controller.beginVerification()) return
+        val token = controller.beginVerification() ?: return
         publishState()
-        launchOperation { controller.verifyAndLoadModels(candidateApiKey) }
+        launchOperation(token) { controller.verifyAndLoadModels(candidateApiKey, token) }
     }
 
     fun selectModel(modelId: String) {
@@ -50,19 +51,20 @@ class DeepSeekSettingsViewModel(
     }
 
     fun saveVerifiedConfiguration() {
-        if (!controller.beginSaving()) return
+        val token = controller.beginSaving() ?: return
         publishState()
-        launchOperation(controller::saveVerifiedConfiguration)
+        launchOperation(token, controller::saveVerifiedConfiguration)
     }
 
     fun clearConfiguration() {
-        if (!controller.beginClearing()) return
+        val token = controller.beginClearing() ?: return
         publishState()
-        launchOperation(controller::clearConfiguration)
+        launchOperation(token, controller::clearConfiguration)
     }
 
     fun discardCandidateConfiguration() {
         operationJob?.cancel()
+        activeToken = null
         controller.discardCandidateConfiguration()
         publishState()
     }
@@ -73,16 +75,21 @@ class DeepSeekSettingsViewModel(
         return success
     }
 
-    private fun launchOperation(operation: () -> Unit) {
+    private fun launchOperation(token: Long, operation: (Long) -> Unit) {
+        activeToken = token
         operationJob = viewModelScope.launch {
             try {
                 withContext(ioDispatcher) {
-                    operation()
+                    operation(token)
                 }
             } catch (exception: CancellationException) {
-                controller.cancelPendingOperation()
+                controller.cancelPendingOperation(token)
                 throw exception
             } finally {
+                if (activeToken == token) {
+                    activeToken = null
+                    operationJob = null
+                }
                 publishState()
             }
         }
