@@ -441,21 +441,30 @@ class DeepSeekSettingsControllerTest {
     }
 
     @Test
-    fun `重复无 token 验证 worker 只调用一次目录`() {
+    fun `idle 状态并发无 token 验证只调用一次目录`() {
         val catalog = BlockingCountingCatalog()
         val controller = DeepSeekSettingsController(FakeStore(), catalog)
         val executor = Executors.newFixedThreadPool(2)
-        val duplicateCompleted = CountDownLatch(1)
+        val ready = CountDownLatch(2)
+        val start = CountDownLatch(1)
+        val oneWorkerReturned = CountDownLatch(1)
         try {
-            controller.beginVerification()
-            val first = executor.submit { controller.verifyAndLoadModels("candidate-secret") }
-            assertTrue(catalog.firstCallEntered.await(1, TimeUnit.SECONDS))
-
-            val duplicate = executor.submit {
+            val first = executor.submit {
+                ready.countDown()
+                start.await()
                 controller.verifyAndLoadModels("candidate-secret")
-                duplicateCompleted.countDown()
+                oneWorkerReturned.countDown()
             }
-            assertTrue(duplicateCompleted.await(200, TimeUnit.MILLISECONDS))
+            val duplicate = executor.submit {
+                ready.countDown()
+                start.await()
+                controller.verifyAndLoadModels("candidate-secret")
+                oneWorkerReturned.countDown()
+            }
+            assertTrue(ready.await(1, TimeUnit.SECONDS))
+            start.countDown()
+            assertTrue(catalog.firstCallEntered.await(1, TimeUnit.SECONDS))
+            assertTrue(oneWorkerReturned.await(200, TimeUnit.MILLISECONDS))
             assertEquals(1, catalog.calls)
 
             catalog.releaseFirstCall.countDown()
@@ -469,22 +478,31 @@ class DeepSeekSettingsControllerTest {
     }
 
     @Test
-    fun `重复无 token 保存 worker 只调用一次存储`() {
+    fun `idle 状态并发无 token 保存只调用一次存储`() {
         val store = BlockingSaveStore()
         val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("model"))))
         val executor = Executors.newFixedThreadPool(2)
-        val duplicateCompleted = CountDownLatch(1)
+        val ready = CountDownLatch(2)
+        val start = CountDownLatch(1)
+        val oneWorkerReturned = CountDownLatch(1)
         try {
             controller.verifyAndLoadModels("candidate-secret")
-            controller.beginSaving()
-            val first = executor.submit { controller.saveVerifiedConfiguration() }
-            assertTrue(store.saveEntered.await(1, TimeUnit.SECONDS))
-
-            val duplicate = executor.submit {
+            val first = executor.submit {
+                ready.countDown()
+                start.await()
                 controller.saveVerifiedConfiguration()
-                duplicateCompleted.countDown()
+                oneWorkerReturned.countDown()
             }
-            assertTrue(duplicateCompleted.await(200, TimeUnit.MILLISECONDS))
+            val duplicate = executor.submit {
+                ready.countDown()
+                start.await()
+                controller.saveVerifiedConfiguration()
+                oneWorkerReturned.countDown()
+            }
+            assertTrue(ready.await(1, TimeUnit.SECONDS))
+            start.countDown()
+            assertTrue(store.saveEntered.await(1, TimeUnit.SECONDS))
+            assertTrue(oneWorkerReturned.await(200, TimeUnit.MILLISECONDS))
             assertEquals(1, store.saveCalls)
 
             store.releaseSave.countDown()
