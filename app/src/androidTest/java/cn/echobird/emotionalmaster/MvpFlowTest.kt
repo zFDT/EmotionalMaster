@@ -142,6 +142,8 @@ class MvpFlowTest {
         val importViewModel = ImportViewModel()
         var settingsState by mutableStateOf(DeepSeekSettingsUiState())
         var discardCount = 0
+        var verifiedApiKey: String? = null
+        var savedModelId: String? = null
 
         composeRule.setContent {
             EmotionalMasterTheme {
@@ -151,7 +153,8 @@ class MvpFlowTest {
                     replyViewModel = ReplyViewModel(),
                     onChooseDocument = { importViewModel.showPreview(samplePreview()) },
                     settingsState = settingsState,
-                    onVerifyDeepSeek = {
+                    onVerifyDeepSeek = { apiKey ->
+                        verifiedApiKey = apiKey
                         settingsState = settingsState.copy(
                             models = listOf(
                                 AvailableModel("deepseek-v4-pro", isDeprecated = false),
@@ -165,6 +168,7 @@ class MvpFlowTest {
                         settingsState = settingsState.copy(selectedModelId = modelId)
                     },
                     onSaveDeepSeek = {
+                        savedModelId = settingsState.selectedModelId
                         settingsState = settingsState.copy(
                             hasSavedConfiguration = true,
                             configuredModelId = settingsState.selectedModelId,
@@ -194,9 +198,11 @@ class MvpFlowTest {
                 .fetchSemanticsNodes().isEmpty(),
         )
         composeRule.onNodeWithText("验证并获取模型").performScrollTo().performClick()
+        assertEquals("test-key", verifiedApiKey)
         composeRule.onNodeWithText("deepseek-v4-pro").performScrollTo().performClick()
         composeRule.onNodeWithText("deepseek-chat（已弃用）").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("保存并启用").performScrollTo().performClick()
+        assertEquals("deepseek-v4-pro", savedModelId)
         composeRule.onNodeWithText("DeepSeek · deepseek-v4-pro").assertIsDisplayed()
         assertEquals(1, discardCount)
     }

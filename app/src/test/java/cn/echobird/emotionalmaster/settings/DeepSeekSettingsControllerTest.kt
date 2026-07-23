@@ -111,6 +111,45 @@ class DeepSeekSettingsControllerTest {
     }
 
     @Test
+    fun `缺少 v4 pro 时自动选择首个未弃用模型`() {
+        val controller = DeepSeekSettingsController(
+            FakeStore(),
+            FakeCatalog(
+                models = listOf(
+                    AvailableModel("deepseek-chat", isDeprecated = true),
+                    model("deepseek-v4-flash"),
+                ),
+            ),
+        )
+
+        controller.verifyAndLoadModels("candidate-secret")
+
+        assertEquals("deepseek-v4-flash", controller.state.selectedModelId)
+        assertTrue(controller.state.canSave)
+    }
+
+    @Test
+    fun `仅有弃用模型时等待用户主动选择`() {
+        val controller = DeepSeekSettingsController(
+            FakeStore(),
+            FakeCatalog(
+                models = listOf(
+                    AvailableModel("deepseek-chat", isDeprecated = true),
+                    AvailableModel("deepseek-reasoner", isDeprecated = true),
+                ),
+            ),
+        )
+
+        controller.verifyAndLoadModels("candidate-secret")
+
+        assertNull(controller.state.selectedModelId)
+        assertFalse(controller.state.canSave)
+        controller.selectModel("deepseek-reasoner")
+        assertEquals("deepseek-reasoner", controller.state.selectedModelId)
+        assertTrue(controller.state.canSave)
+    }
+
+    @Test
     fun `空候选密钥使用已保存配置刷新模型`() {
         val store = FakeStore(configuration = DeepSeekConfiguration("saved", "saved-secret"))
         val catalog = FakeCatalog(models = listOf(model("fresh")))

@@ -105,15 +105,20 @@ class DeepSeekSettingsController(
                 verificationFailed(token, NO_MODELS_MESSAGE)
                 return
             }
+            val selectedModelId = models
+                .filterNot(AvailableModel::isDeprecated)
+                .takeIf(List<AvailableModel>::isNotEmpty)
+                ?.let(::preferredDeepSeekModel)
+                ?.id
             operationLock.withLock {
                 if (!isActiveLocked(token, Operation.VERIFICATION)) return
                 verifiedApiKey = apiKey
                 activeOperation = null
                 state = state.copy(
                     models = models,
-                    selectedModelId = preferredDeepSeekModel(models).id,
+                    selectedModelId = selectedModelId,
                     isLoading = false,
-                    canSave = true,
+                    canSave = selectedModelId != null,
                     errorMessage = null,
                     success = null,
                 )

@@ -140,6 +140,7 @@ fun DeepSeekSettingsScreen(
                 text = "刷新模型列表",
                 onClick = { onVerify(apiKey.takeIf(String::isNotBlank)) },
                 modifier = Modifier.fillMaxWidth(),
+                enabled = !state.isLoading,
             )
             Spacer(Modifier.height(16.dp))
             PrimaryAction(
@@ -155,10 +156,14 @@ fun DeepSeekSettingsScreen(
                 text = "清除已保存配置",
                 onClick = onClear,
                 modifier = Modifier.fillMaxWidth(),
+                enabled = !state.isLoading,
             )
         }
         Spacer(Modifier.height(24.dp))
-        PrivacyNote("API Key 使用 Android Keystore 加密后保存在本机，不会显示、写入日志或加入聊天上下文。")
+        PrivacyNote(
+            "API Key 使用 Android Keystore 加密后保存在本机。验证模型列表不会发送聊天内容；" +
+                "实际生成时，只有你确认后的脱敏上下文会交由 DeepSeek 第三方服务处理。",
+        )
         Spacer(Modifier.height(16.dp))
     }
 }
