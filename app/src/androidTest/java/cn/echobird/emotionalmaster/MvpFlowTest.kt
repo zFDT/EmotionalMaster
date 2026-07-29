@@ -1,10 +1,17 @@
 package cn.echobird.emotionalmaster
 
 import android.graphics.Bitmap
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.LocalActivity
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.hasAnySibling
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -13,6 +20,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -41,7 +49,6 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.espresso.Espresso.pressBack
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -57,8 +64,10 @@ class MvpFlowTest {
         val importViewModel = ImportViewModel()
         val analysisViewModel = AnalysisViewModel()
         val replyViewModel = ReplyViewModel()
+        lateinit var activity: ComponentActivity
 
         composeRule.setContent {
+            activity = LocalActivity.current as ComponentActivity
             EmotionalMasterTheme {
                 EmotionalMasterFlow(
                     importViewModel = importViewModel,
@@ -93,10 +102,14 @@ class MvpFlowTest {
         composeRule.onNodeWithTag("current-message").performTextInput("你最近怎么总是这么忙？")
         composeRule.onNodeWithTag("current-message").performImeAction()
         composeRule.waitForIdle()
-        pressBack()
-        composeRule.waitForIdle()
-        if (composeRule.onAllNodesWithText("相处节奏").fetchSemanticsNodes().isEmpty()) {
-            pressBack()
+        composeRule.runOnIdle {
+            activity.onBackPressedDispatcher.onBackPressed()
+        }
+        composeRule.waitUntil(
+            conditionDescription = "系统返回应在 5 秒内从回复页导航到分析页",
+            timeoutMillis = 5_000,
+        ) {
+            composeRule.onAllNodesWithText("相处节奏").fetchSemanticsNodes().isNotEmpty()
         }
         composeRule.onNodeWithText("相处节奏").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("获取回复建议").performScrollTo().performClick()
@@ -104,13 +117,17 @@ class MvpFlowTest {
         composeRule.onNodeWithText("预览上传内容").performScrollTo().performClick()
 
         composeRule.onNodeWithText("将上传的上下文").assertIsDisplayed()
-        composeRule.onNodeWithText("未配置 DeepSeek").performScrollTo().assertIsDisplayed()
+        composeRule.onNode(
+            hasText("未配置 DeepSeek") and hasAnySibling(hasText("供应商")),
+        )
+            .performScrollTo()
+            .assertIsDisplayed()
         composeRule.onNodeWithTag("context-current-message").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("取消").assertIsDisplayed()
         capture("05-context-preview")
         composeRule.onNodeWithText("确认生成").performClick()
         composeRule.onNodeWithText("在线生成失败").assertIsDisplayed()
-        composeRule.onNodeWithText("使用本地建议").performClick()
+        composeRule.onNodeWithText("使用本地建议").performScrollTo().performClick()
         composeRule.onNodeWithText("选择一种回复思路").performScrollTo().assertIsDisplayed()
         capture("06-suggestions")
         composeRule.onAllNodesWithText("复制").assertCountEquals(4)
@@ -149,6 +166,7 @@ class MvpFlowTest {
     @Test
     fun configureDeepSeekModelWithoutExposingApiKey() {
         val importViewModel = ImportViewModel()
+        val replyViewModel = ReplyViewModel()
         var settingsState by mutableStateOf(DeepSeekSettingsUiState())
         var discardCount = 0
         var verifiedApiKey: String? = null
@@ -159,7 +177,7 @@ class MvpFlowTest {
                 EmotionalMasterFlow(
                     importViewModel = importViewModel,
                     analysisViewModel = AnalysisViewModel(),
-                    replyViewModel = ReplyViewModel(),
+                    replyViewModel = replyViewModel,
                     onChooseDocument = { importViewModel.showPreview(samplePreview()) },
                     settingsState = settingsState,
                     onVerifyDeepSeek = { apiKey ->
@@ -202,17 +220,23 @@ class MvpFlowTest {
         composeRule.onNodeWithText("DeepSeek 官方服务").assertIsDisplayed()
         composeRule.onNodeWithText("api.deepseek.com").assertIsDisplayed()
         composeRule.onNodeWithTag("deepseek-api-key").performTextInput("test-key")
-        assertTrue(
-            composeRule.onAllNodesWithText("test-key", useUnmergedTree = true)
-                .fetchSemanticsNodes().isEmpty(),
-        )
+        // 文本 matcher 也会读取原始 InputText；密码安全应断言密码语义与可访问文本遮罩。
+        composeRule.onNodeWithTag("deepseek-api-key", useUnmergedTree = true)
+            .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
+            .assertTextEquals("••••••••")
         composeRule.onNodeWithText("验证并获取模型").performScrollTo().performClick()
         assertEquals("test-key", verifiedApiKey)
         composeRule.onNodeWithText("deepseek-v4-pro").performScrollTo().performClick()
         composeRule.onNodeWithText("deepseek-chat（已弃用）").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("保存并启用").performScrollTo().performClick()
         assertEquals("deepseek-v4-pro", savedModelId)
-        composeRule.onNodeWithText("DeepSeek · deepseek-v4-pro").assertIsDisplayed()
+        composeRule.waitUntil(
+            conditionDescription = "回复页模型配置应在 5 秒内读取完成",
+            timeoutMillis = 5_000,
+        ) {
+            !replyViewModel.uiState.isResolvingOnlineProvider
+        }
+        composeRule.onNodeWithText("DeepSeek · deepseek-v4-pro").performScrollTo().assertIsDisplayed()
         assertEquals(1, discardCount)
     }
 
@@ -274,6 +298,7 @@ class MvpFlowTest {
     @Test
     fun backgroundSettingsSuccessIsConsumedWithoutReopeningNavigation() {
         val importViewModel = ImportViewModel()
+        val replyViewModel = ReplyViewModel()
         var settingsState by mutableStateOf(DeepSeekSettingsUiState())
         var consumeCount = 0
 
@@ -282,7 +307,7 @@ class MvpFlowTest {
                 EmotionalMasterFlow(
                     importViewModel = importViewModel,
                     analysisViewModel = AnalysisViewModel(),
-                    replyViewModel = ReplyViewModel(),
+                    replyViewModel = replyViewModel,
                     onChooseDocument = { importViewModel.showPreview(samplePreview()) },
                     settingsState = settingsState,
                     onVerifyDeepSeek = {
@@ -327,8 +352,13 @@ class MvpFlowTest {
                 success = SettingsSuccess.SAVED,
             )
         }
-        composeRule.onNodeWithText("DeepSeek · deepseek-v4-pro").assertIsDisplayed()
-        composeRule.runOnIdle { assertEquals(1, consumeCount) }
+        composeRule.waitUntil(
+            conditionDescription = "后台保存成功应在 5 秒内被消费并完成模型配置刷新",
+            timeoutMillis = 5_000,
+        ) {
+            consumeCount == 1 && !replyViewModel.uiState.isResolvingOnlineProvider
+        }
+        composeRule.onNodeWithText("DeepSeek · deepseek-v4-pro").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("模型设置").performScrollTo().performClick()
         composeRule.onNodeWithText("DeepSeek 官方服务").assertIsDisplayed()
 
@@ -338,8 +368,13 @@ class MvpFlowTest {
         composeRule.runOnIdle {
             settingsState = DeepSeekSettingsUiState(success = SettingsSuccess.CLEARED)
         }
-        composeRule.onNodeWithText("未配置 DeepSeek").assertIsDisplayed()
-        composeRule.runOnIdle { assertEquals(2, consumeCount) }
+        composeRule.waitUntil(
+            conditionDescription = "后台清除成功应在 5 秒内被消费并完成模型配置刷新",
+            timeoutMillis = 5_000,
+        ) {
+            consumeCount == 2 && !replyViewModel.uiState.isResolvingOnlineProvider
+        }
+        composeRule.onNodeWithText("未配置 DeepSeek").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("模型设置").performScrollTo().performClick()
         composeRule.onNodeWithText("DeepSeek 官方服务").assertIsDisplayed()
     }
@@ -383,7 +418,7 @@ class MvpFlowTest {
         composeRule.onNodeWithText("将上传的上下文").assertIsDisplayed()
         composeRule.onNodeWithText("在线生成失败").assertIsDisplayed()
         composeRule.onNodeWithText("连接 DeepSeek 超时").assertIsDisplayed()
-        composeRule.onNodeWithText("使用本地建议").assertIsDisplayed()
+        composeRule.onNodeWithText("使用本地建议").performScrollTo().assertIsDisplayed()
         composeRule.onAllNodesWithText("复制").assertCountEquals(0)
         composeRule.onNodeWithText("使用本地建议").performClick()
         composeRule.onAllNodesWithText("复制").assertCountEquals(4)
