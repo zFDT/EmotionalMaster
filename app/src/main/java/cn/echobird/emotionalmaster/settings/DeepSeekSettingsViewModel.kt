@@ -70,6 +70,10 @@ class DeepSeekSettingsViewModel(
         publishState()
     }
 
+    fun onCandidateEdited() {
+        discardCandidateConfiguration()
+    }
+
     fun consumeSuccess(): SettingsSuccess? {
         val success = controller.consumeSuccess()
         publishState()

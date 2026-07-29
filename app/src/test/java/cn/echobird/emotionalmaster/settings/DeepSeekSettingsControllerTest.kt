@@ -885,6 +885,30 @@ class DeepSeekSettingsControllerTest {
     }
 
     @Test
+    fun `候选输入变化后必须重新验证且只能保存重新验证的密钥`() {
+        val store = FakeStore()
+        val controller = DeepSeekSettingsController(
+            store,
+            FakeCatalog(models = listOf(model("candidate-model"))),
+        )
+        controller.verifyAndLoadModels("candidate-a")
+
+        controller.discardCandidateConfiguration()
+
+        assertFalse(controller.state.canSave)
+        assertTrue(controller.state.models.isEmpty())
+        controller.saveVerifiedConfiguration()
+        assertEquals(0, store.saveCalls)
+
+        controller.verifyAndLoadModels("candidate-b")
+        controller.saveVerifiedConfiguration()
+
+        assertEquals(1, store.saveCalls)
+        assertEquals("candidate-b", store.savedConfiguration?.apiKey)
+        assertSecretIsNotObservable(controller)
+    }
+
+    @Test
     fun `刷新已保存密钥后的候选也可被丢弃`() {
         val store = FakeStore(configuration = DeepSeekConfiguration("saved-model", "saved-secret"))
         val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("fresh-model"))))

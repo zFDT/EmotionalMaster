@@ -12,6 +12,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -213,6 +214,61 @@ class MvpFlowTest {
         assertEquals("deepseek-v4-pro", savedModelId)
         composeRule.onNodeWithText("DeepSeek · deepseek-v4-pro").assertIsDisplayed()
         assertEquals(1, discardCount)
+    }
+
+    @Test
+    fun editingVerifiedApiKeyRequiresVerifyingTheCurrentInputAgain() {
+        val importViewModel = ImportViewModel()
+        var settingsState by mutableStateOf(DeepSeekSettingsUiState())
+        var verifiedCandidate: String? = null
+        var savedCandidate: String? = null
+
+        composeRule.setContent {
+            EmotionalMasterTheme {
+                EmotionalMasterFlow(
+                    importViewModel = importViewModel,
+                    analysisViewModel = AnalysisViewModel(),
+                    replyViewModel = ReplyViewModel(),
+                    onChooseDocument = { importViewModel.showPreview(samplePreview()) },
+                    settingsState = settingsState,
+                    onVerifyDeepSeek = { candidate ->
+                        verifiedCandidate = candidate
+                        settingsState = settingsState.copy(
+                            models = listOf(AvailableModel("deepseek-v4-pro", isDeprecated = false)),
+                            selectedModelId = "deepseek-v4-pro",
+                            canSave = true,
+                        )
+                    },
+                    onSaveDeepSeek = {
+                        savedCandidate = verifiedCandidate
+                    },
+                    onDeepSeekCandidateEdited = {
+                        verifiedCandidate = null
+                        settingsState = settingsState.copy(
+                            models = emptyList(),
+                            selectedModelId = null,
+                            canSave = false,
+                        )
+                    },
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("选择聊天文件").performScrollTo().performClick()
+        composeRule.onNodeWithText("确认导入").performScrollTo().performClick()
+        composeRule.onNodeWithText("获取回复建议").performScrollTo().performClick()
+        composeRule.onNodeWithText("模型设置").performScrollTo().performClick()
+        composeRule.onNodeWithTag("deepseek-api-key").performTextInput("candidate-a")
+        composeRule.onNodeWithText("验证并获取模型").performScrollTo().performClick()
+        composeRule.onNodeWithText("保存并启用").performScrollTo().assertIsDisplayed()
+
+        composeRule.onNodeWithTag("deepseek-api-key").performTextReplacement("candidate-b")
+
+        composeRule.onAllNodesWithText("保存并启用").assertCountEquals(0)
+        composeRule.onAllNodesWithText("deepseek-v4-pro").assertCountEquals(0)
+        composeRule.onNodeWithText("验证并获取模型").performScrollTo().performClick()
+        composeRule.onNodeWithText("保存并启用").performScrollTo().performClick()
+        assertEquals("candidate-b", savedCandidate)
     }
 
     @Test

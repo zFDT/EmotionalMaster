@@ -134,6 +134,7 @@ class MainActivity : ComponentActivity() {
                     onSaveDeepSeek = deepSeekSettingsViewModel::saveVerifiedConfiguration,
                     onClearDeepSeek = deepSeekSettingsViewModel::clearConfiguration,
                     onConsumeDeepSeekSuccess = deepSeekSettingsViewModel::consumeSuccess,
+                    onDeepSeekCandidateEdited = deepSeekSettingsViewModel::onCandidateEdited,
                     onDiscardDeepSeekCandidate = deepSeekSettingsViewModel::discardCandidateConfiguration,
                 )
             }
@@ -199,6 +200,7 @@ fun EmotionalMasterFlow(
     onSaveDeepSeek: () -> Unit = {},
     onClearDeepSeek: () -> Unit = {},
     onConsumeDeepSeekSuccess: () -> SettingsSuccess? = { null },
+    onDeepSeekCandidateEdited: () -> Unit = {},
     onDiscardDeepSeekCandidate: () -> Unit = {},
 ) {
     var screenName by rememberSaveable { mutableStateOf(MvpScreen.IMPORT.name) }
@@ -287,6 +289,7 @@ fun EmotionalMasterFlow(
                 DeepSeekSettingsScreen(
                     state = settingsState,
                     onVerify = onVerifyDeepSeek,
+                    onCandidateEdited = onDeepSeekCandidateEdited,
                     onSelectModel = onSelectDeepSeekModel,
                     onSave = onSaveDeepSeek,
                     onClear = onClearDeepSeek,

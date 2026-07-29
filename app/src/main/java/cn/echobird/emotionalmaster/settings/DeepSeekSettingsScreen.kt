@@ -37,6 +37,7 @@ import cn.echobird.emotionalmaster.ui.StepHeader
 fun DeepSeekSettingsScreen(
     state: DeepSeekSettingsUiState,
     onVerify: (String?) -> Unit,
+    onCandidateEdited: () -> Unit,
     onSelectModel: (String) -> Unit,
     onSave: () -> Unit,
     onClear: () -> Unit,
@@ -73,7 +74,10 @@ fun DeepSeekSettingsScreen(
         Spacer(Modifier.height(16.dp))
         OutlinedTextField(
             value = apiKey,
-            onValueChange = { apiKey = it },
+            onValueChange = {
+                apiKey = it
+                onCandidateEdited()
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("deepseek-api-key"),
