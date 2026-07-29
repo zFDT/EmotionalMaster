@@ -9,6 +9,7 @@ import java.security.KeyStore
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -34,21 +35,26 @@ class DeepSeekConfigurationStoreInstrumentedTest {
             assertEquals(configuration, store.load())
             assertEquals(configuration.modelId, store.configuredModelId())
             assertFalse(preferences.all.values.joinToString().contains(TEST_API_KEY))
+            assertTrue(androidKeyStore().containsAlias(TEST_KEY_ALIAS))
 
             store.clear()
 
             assertNull(store.load())
             assertNull(store.configuredModelId())
             assertFalse(preferences.all.keys.any { it.contains("api", ignoreCase = true) })
+            assertFalse(androidKeyStore().containsAlias(TEST_KEY_ALIAS))
         } finally {
             preferences.edit().clear().commit()
-            KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.run {
+            androidKeyStore().run {
                 if (containsAlias(TEST_KEY_ALIAS)) {
                     deleteEntry(TEST_KEY_ALIAS)
                 }
             }
         }
     }
+
+    private fun androidKeyStore(): KeyStore =
+        KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
 
     private companion object {
         const val TEST_PREFERENCES_NAME = "deepseek-configuration-instrumentation-test"
