@@ -87,6 +87,11 @@ class SharedPreferencesDeepSeekConfigurationStore private constructor(
         cipher,
     )
 
+    internal constructor(context: Context, preferencesName: String, keyAlias: String) : this(
+        context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE),
+        AndroidKeystoreSecretCipher(keyAlias),
+    )
+
     override fun load(): DeepSeekConfiguration? = synchronized(processLock) {
         val snapshot = preferences.all.toMap()
         if (!hasAnyConfigurationField(snapshot)) {
@@ -332,7 +337,9 @@ class SharedPreferencesDeepSeekConfigurationStore private constructor(
     }
 }
 
-internal class AndroidKeystoreSecretCipher : SecretCipher {
+internal class AndroidKeystoreSecretCipher(
+    private val keyAlias: String = KEY_ALIAS,
+) : SecretCipher {
     override fun encrypt(plaintext: ByteArray): EncryptedSecret = synchronized(
         SharedPreferencesDeepSeekConfigurationStore.processLock,
     ) {
@@ -353,20 +360,20 @@ internal class AndroidKeystoreSecretCipher : SecretCipher {
 
     override fun clearKey(): Unit = synchronized(SharedPreferencesDeepSeekConfigurationStore.processLock) {
         KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.run {
-            if (containsAlias(KEY_ALIAS)) {
-                deleteEntry(KEY_ALIAS)
+            if (containsAlias(keyAlias)) {
+                deleteEntry(keyAlias)
             }
         }
     }
 
     private fun getOrCreateKey(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        (keyStore.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        (keyStore.getKey(keyAlias, null) as? SecretKey)?.let { return it }
 
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE).run {
             init(
                 KeyGenParameterSpec.Builder(
-                    KEY_ALIAS,
+                    keyAlias,
                     KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
                 ).setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                     .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
@@ -379,7 +386,7 @@ internal class AndroidKeystoreSecretCipher : SecretCipher {
 
     private fun getExistingKey(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        return keyStore.getKey(KEY_ALIAS, null) as? SecretKey
+        return keyStore.getKey(keyAlias, null) as? SecretKey
             ?: throw IllegalStateException("DeepSeek API 密钥不可用")
     }
 
