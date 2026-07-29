@@ -237,6 +237,25 @@ class DeepSeekSettingsControllerTest {
     }
 
     @Test
+    fun `同模型再次保存新密钥递增配置修订且消费成功事件后保持`() {
+        val controller = DeepSeekSettingsController(
+            FakeStore(configuration = DeepSeekConfiguration("same-model", "old-secret")),
+            FakeCatalog(models = listOf(model("same-model"))),
+        )
+        initialize(controller)
+        val initialRevision = controller.state.configurationRevision
+        controller.verifyAndLoadModels("new-secret")
+
+        controller.saveVerifiedConfiguration()
+
+        assertEquals("same-model", controller.state.configuredModelId)
+        assertEquals(initialRevision + 1, controller.state.configurationRevision)
+        assertEquals(SettingsSuccess.SAVED, controller.consumeSuccess())
+        assertEquals(initialRevision + 1, controller.state.configurationRevision)
+        assertSecretIsNotObservable(controller)
+    }
+
+    @Test
     fun `选择不存在模型后不得保存`() {
         val store = FakeStore()
         val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("available"))))
@@ -301,12 +320,14 @@ class DeepSeekSettingsControllerTest {
         )
         val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("new-model"))))
         initialize(controller)
+        val initialRevision = controller.state.configurationRevision
         controller.verifyAndLoadModels("candidate-secret")
 
         controller.saveVerifiedConfiguration()
 
         assertTrue(controller.state.hasSavedConfiguration)
         assertEquals("old-model", controller.state.configuredModelId)
+        assertEquals(initialRevision, controller.state.configurationRevision)
         assertFalse(controller.state.canSave)
         assertEquals("无法保存 DeepSeek 配置", controller.state.errorMessage)
         assertSecretIsNotObservable(controller)
@@ -317,6 +338,7 @@ class DeepSeekSettingsControllerTest {
         val successfulStore = FakeStore(configuration = DeepSeekConfiguration("saved", "saved-secret"))
         val successfulController = DeepSeekSettingsController(successfulStore, FakeCatalog())
         initialize(successfulController)
+        val initialRevision = successfulController.state.configurationRevision
 
         successfulController.clearConfiguration()
 
@@ -325,7 +347,9 @@ class DeepSeekSettingsControllerTest {
         assertNull(successfulController.state.selectedModelId)
         assertTrue(successfulController.state.models.isEmpty())
         assertNull(successfulController.state.errorMessage)
+        assertEquals(initialRevision + 1, successfulController.state.configurationRevision)
         assertEquals(SettingsSuccess.CLEARED, successfulController.consumeSuccess())
+        assertEquals(initialRevision + 1, successfulController.state.configurationRevision)
         assertNull(successfulController.consumeSuccess())
 
         val failingController = DeepSeekSettingsController(
@@ -336,10 +360,12 @@ class DeepSeekSettingsControllerTest {
             FakeCatalog(),
         )
         initialize(failingController)
+        val failingInitialRevision = failingController.state.configurationRevision
         failingController.clearConfiguration()
 
         assertTrue(failingController.state.hasSavedConfiguration)
         assertEquals("saved", failingController.state.configuredModelId)
+        assertEquals(failingInitialRevision, failingController.state.configurationRevision)
         assertEquals("无法清除 DeepSeek 配置", failingController.state.errorMessage)
     }
 

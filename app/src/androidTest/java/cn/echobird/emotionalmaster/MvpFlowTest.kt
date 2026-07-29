@@ -27,8 +27,11 @@ import cn.echobird.emotionalmaster.llm.ReplySuggestionService
 import cn.echobird.emotionalmaster.reply.ReplyScreen
 import cn.echobird.emotionalmaster.reply.OnlineReplyProvider
 import cn.echobird.emotionalmaster.reply.ReplyViewModel
+import cn.echobird.emotionalmaster.settings.DeepSeekSettingsController
 import cn.echobird.emotionalmaster.settings.DeepSeekSettingsUiState
 import cn.echobird.emotionalmaster.settings.SettingsSuccess
+import cn.echobird.emotionalmaster.storage.DeepSeekConfiguration
+import cn.echobird.emotionalmaster.storage.DeepSeekConfigurationStore
 import cn.echobird.emotionalmaster.ui.EmotionalMasterTheme
 import java.time.Instant
 import java.io.File
@@ -389,6 +392,92 @@ class MvpFlowTest {
         }
 
         assertEquals(listOf("deepseek-v4-pro", "deepseek-v4-flash"), requestedModels)
+    }
+
+    @Test
+    fun savingNewApiKeyForSameModelRefreshesProviderBeforeNextRequest() {
+        var savedConfiguration = DeepSeekConfiguration("deepseek-v4-pro", "old-test-key")
+        val configurationStore = object : DeepSeekConfigurationStore {
+            override fun load(): DeepSeekConfiguration = savedConfiguration
+
+            override fun configuredModelId(): String = savedConfiguration.modelId
+
+            override fun save(configuration: DeepSeekConfiguration) {
+                savedConfiguration = configuration
+            }
+
+            override fun clear() {
+                error("此测试不应清除配置")
+            }
+        }
+        val controller = DeepSeekSettingsController(
+            configurationStore = configurationStore,
+            modelCatalog = { listOf(AvailableModel("deepseek-v4-pro", isDeprecated = false)) },
+        ).also(DeepSeekSettingsController::initializeMetadata)
+        var settingsState by mutableStateOf(controller.state)
+        val requestedApiKeys = mutableListOf<String>()
+        val replyViewModel = ReplyViewModel(
+            providerResolver = {
+                val configuration = configurationStore.load()
+                OnlineReplyProvider(
+                    label = "DeepSeek · ${configuration.modelId}",
+                    service = ReplySuggestionService(
+                        ModelProvider {
+                            requestedApiKeys += configuration.apiKey
+                            successfulSuggestions()
+                        },
+                    ),
+                )
+            },
+        )
+        val importViewModel = ImportViewModel()
+
+        composeRule.setContent {
+            EmotionalMasterTheme {
+                EmotionalMasterFlow(
+                    importViewModel = importViewModel,
+                    analysisViewModel = AnalysisViewModel(),
+                    replyViewModel = replyViewModel,
+                    onChooseDocument = { importViewModel.showPreview(samplePreview()) },
+                    settingsState = settingsState,
+                    onVerifyDeepSeek = { apiKey ->
+                        controller.verifyAndLoadModels(apiKey)
+                        settingsState = controller.state
+                    },
+                    onSelectDeepSeekModel = { modelId ->
+                        controller.selectModel(modelId)
+                        settingsState = controller.state
+                    },
+                    onSaveDeepSeek = {
+                        controller.saveVerifiedConfiguration()
+                        settingsState = controller.state
+                    },
+                    onConsumeDeepSeekSuccess = {
+                        controller.consumeSuccess().also {
+                            settingsState = controller.state
+                        }
+                    },
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("选择聊天文件").performScrollTo().performClick()
+        composeRule.onNodeWithText("确认导入").performScrollTo().performClick()
+        composeRule.onNodeWithText("获取回复建议").performScrollTo().performClick()
+        composeRule.waitUntil(5_000) { !replyViewModel.uiState.isResolvingOnlineProvider }
+        composeRule.onNodeWithText("模型设置").performScrollTo().performClick()
+        composeRule.onNodeWithTag("deepseek-api-key").performTextInput("new-test-key")
+        composeRule.onNodeWithText("验证并获取模型").performScrollTo().performClick()
+        composeRule.onNodeWithText("保存并启用").performScrollTo().performClick()
+        composeRule.onNodeWithTag("current-message").performTextInput("使用新配置")
+        composeRule.onNodeWithText("预览上传内容").performScrollTo().performClick()
+        composeRule.onNodeWithText("确认生成").performClick()
+        composeRule.waitUntil(5_000) {
+            !replyViewModel.uiState.isGenerating && requestedApiKeys.isNotEmpty()
+        }
+
+        assertEquals(listOf("new-test-key"), requestedApiKeys)
+        assertFalse(settingsState.toString().contains("new-test-key"))
     }
 
     @Test

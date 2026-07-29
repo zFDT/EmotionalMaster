@@ -227,7 +227,7 @@ fun EmotionalMasterFlow(
         }
     }
 
-    LaunchedEffect(settingsState.configuredModelId) {
+    LaunchedEffect(settingsState.configurationRevision, settingsState.configuredModelId) {
         replyViewModel.refreshOnlineProvider()
     }
 

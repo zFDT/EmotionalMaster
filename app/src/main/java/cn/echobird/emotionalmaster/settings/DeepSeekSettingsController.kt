@@ -13,6 +13,7 @@ import kotlin.concurrent.withLock
 data class DeepSeekSettingsUiState(
     val hasSavedConfiguration: Boolean = false,
     val configuredModelId: String? = null,
+    val configurationRevision: Long = 0L,
     val models: List<AvailableModel> = emptyList(),
     val selectedModelId: String? = null,
     val isLoading: Boolean = false,
@@ -183,6 +184,7 @@ class DeepSeekSettingsController(
                 state = state.copy(
                     hasSavedConfiguration = true,
                     configuredModelId = request.modelId,
+                    configurationRevision = state.configurationRevision + 1,
                     isLoading = false,
                     canSave = false,
                     errorMessage = null,
@@ -219,7 +221,10 @@ class DeepSeekSettingsController(
                 if (!isActiveLocked(token, Operation.CLEARING)) return
                 verifiedApiKey = null
                 activeOperation = null
-                state = DeepSeekSettingsUiState(success = SettingsSuccess.CLEARED)
+                state = DeepSeekSettingsUiState(
+                    configurationRevision = state.configurationRevision + 1,
+                    success = SettingsSuccess.CLEARED,
+                )
             }
         } catch (exception: CancellationException) {
             cancelPendingOperation(token)
@@ -308,6 +313,7 @@ class DeepSeekSettingsController(
             state = DeepSeekSettingsUiState(
                 hasSavedConfiguration = configuredModelId != null,
                 configuredModelId = configuredModelId,
+                configurationRevision = state.configurationRevision,
                 selectedModelId = configuredModelId,
             )
         }
@@ -317,7 +323,10 @@ class DeepSeekSettingsController(
         operationLock.withLock {
             if (!isActiveLocked(token, Operation.INITIALIZATION)) return
             activeOperation = null
-            state = DeepSeekSettingsUiState(errorMessage = INVALID_SAVED_CONFIGURATION_MESSAGE)
+            state = DeepSeekSettingsUiState(
+                configurationRevision = state.configurationRevision,
+                errorMessage = INVALID_SAVED_CONFIGURATION_MESSAGE,
+            )
         }
     }
 
