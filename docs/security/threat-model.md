@@ -14,7 +14,7 @@
 | 解析与导入 | 畸形数据、部分导入、重复导入 | JSON/JSONL 校验；fatal 阻断；repository 事务写入；来源哈希保证重导幂等 | 当前 UI 可跳过 JSONL 非致命坏行，确认页必须明确显示 warning |
 | 本地数据库 | 数据库文件被复制、密钥硬编码、残留数据 | SQLCipher；随机口令由 Android Keystore 包装；无代码内密钥；联系人级删除使用级联事务 | 已解锁设备或运行中进程仍能访问明文；依赖系统锁屏与 Android 沙箱 |
 | 备份与迁移 | 云备份或换机把聊天数据带出设备 | `allowBackup=false`、`fullBackupContent=false`，data extraction rules 排除 root 域 | OEM 可能实现额外迁移能力；发布验收需在目标 OEM 复核 |
-| 日志与崩溃 | 原文、API Key、Authorization、URL token 进入 logcat | 生产代码不记录请求体/密钥；provider logger 只接收固定事件名；配置对象 `toString()` 固定把 Key 显示为 `[REDACTED]`；对 UI 暴露稳定的分类错误 | Throwable cause、第三方网络栈和系统组件仍可能在内存中持有底层错误；任何未来日志或崩溃上报都不得记录完整异常链、请求/响应或配置对象字段 |
+| 日志与崩溃 | 原文、API Key、Authorization、URL token 进入 logcat | 生产代码不记录请求体/密钥；provider logger 只记录固定结构的安全元数据（HTTP method、移除查询参数后的 endpoint、statusCode、durationMillis）；配置对象 `toString()` 固定把 Key 显示为 `[REDACTED]`；对 UI 暴露稳定的分类错误 | Throwable cause、第三方网络栈和系统组件仍可能在内存中持有底层错误；任何未来日志或崩溃上报都不得记录完整异常链、请求/响应或配置对象字段 |
 | 剪贴板 | 其他应用或系统历史读取回复文本 | 仅用户点击“复制”后写入；Snackbar 提示剪贴板隐私；不复制聊天原文 | Android 版本和输入法可能保留剪贴板历史；用户需主动清理 |
 | 网络传输 | 明文 HTTP、中间人、错误 endpoint | manifest 和 network security config 禁止明文；第一版代码固定 DeepSeek 官方 `/models` 与 Chat Completions HTTPS 地址；请求前展示供应商和上传范围 | 受信任 CA、DeepSeek 及其基础设施仍可看到请求数据；发布前仍需复核证书、域名和地区策略 |
 | 模型供应商 | 数据留存、二次训练、跨境处理、输出误导 | 仅支持 DeepSeek 官方服务；Chat Completions 只在用户确认脱敏预览后调用；建议展示意图/风险且不自动发送 | DeepSeek 作为第三方可见鉴权账户、所选模型、结构化提示和已确认的脱敏聊天内容；其留存、训练、人员访问和跨境处理不由本应用控制 |
@@ -47,7 +47,7 @@
 
 ### 日志、异常与字符串表示
 
-- 不记录 Authorization、API Key、请求体、响应体或聊天样例；provider logger 只能接收固定的开始/成功/失败事件，不接收动态错误文本。
+- 不记录 Authorization、API Key、请求体、响应体、聊天样例或动态异常正文；provider logger 只接收固定结构的 `ModelCallEvent`，字段为 HTTP method、移除查询参数后的 endpoint、statusCode 和 durationMillis。生产在线回复的 endpoint 是固定 DeepSeek 官方 Chat Completions URL。
 - `DeepSeekConfiguration.toString()` 永远隐藏 Key，UI state 和 provider 标签不包含 Key；对外异常消息只暴露认证、余额、限流、超时、服务不可用或格式错误等固定类别。
 - 底层异常 cause 可能包含设备、网络或第三方库生成的细节。当前代码不把它写入日志；未来接入日志、分析或崩溃 SDK 时不得调用完整异常 `toString()`、打印 stack trace 或序列化 request/response。
 
