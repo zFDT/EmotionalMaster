@@ -205,10 +205,12 @@ class DeepSeekSettingsControllerTest {
     fun `未经验证不能保存`() {
         val store = FakeStore()
         val controller = DeepSeekSettingsController(store, FakeCatalog())
+        val initialRevision = controller.state.configurationRevision
 
         controller.saveVerifiedConfiguration()
 
         assertEquals(0, store.saveCalls)
+        assertEquals(initialRevision, controller.state.configurationRevision)
         assertFalse(controller.state.hasSavedConfiguration)
         assertFalse(controller.state.canSave)
     }
@@ -327,9 +329,81 @@ class DeepSeekSettingsControllerTest {
 
         assertTrue(controller.state.hasSavedConfiguration)
         assertEquals("old-model", controller.state.configuredModelId)
-        assertEquals(initialRevision, controller.state.configurationRevision)
+        assertEquals("old-model", controller.state.selectedModelId)
+        assertEquals(initialRevision + 1, controller.state.configurationRevision)
+        assertEquals(2, store.configuredModelIdCalls)
         assertFalse(controller.state.canSave)
         assertEquals("无法保存 DeepSeek 配置", controller.state.errorMessage)
+        assertSecretIsNotObservable(controller)
+    }
+
+    @Test
+    fun `保存写入新元数据后抛错按新配置对账`() {
+        val store = FakeStore(
+            configuration = DeepSeekConfiguration("old-model", "saved-secret"),
+            saveFailure = ConfigurationStoreException("无法保存 DeepSeek 配置"),
+            saveConfigurationBeforeFailure = true,
+        )
+        val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("new-model"))))
+        initialize(controller)
+        val initialRevision = controller.state.configurationRevision
+        controller.verifyAndLoadModels("candidate-secret")
+
+        controller.saveVerifiedConfiguration()
+
+        assertTrue(controller.state.hasSavedConfiguration)
+        assertEquals("new-model", controller.state.configuredModelId)
+        assertEquals("new-model", controller.state.selectedModelId)
+        assertEquals(initialRevision + 1, controller.state.configurationRevision)
+        assertEquals(2, store.configuredModelIdCalls)
+        assertEquals("无法保存 DeepSeek 配置", controller.state.errorMessage)
+        assertSecretIsNotObservable(controller)
+    }
+
+    @Test
+    fun `保存抛错且元数据重读失败时安全置为未配置`() {
+        val store = FakeStore(
+            configuration = DeepSeekConfiguration("old-model", "saved-secret"),
+            saveFailure = ConfigurationStoreException("无法保存 DeepSeek 配置"),
+        )
+        val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("new-model"))))
+        initialize(controller)
+        val initialRevision = controller.state.configurationRevision
+        store.metadataFailure = ConfigurationStoreException("metadata-secret")
+        controller.verifyAndLoadModels("candidate-secret")
+
+        controller.saveVerifiedConfiguration()
+
+        assertFalse(controller.state.hasSavedConfiguration)
+        assertNull(controller.state.configuredModelId)
+        assertNull(controller.state.selectedModelId)
+        assertEquals(initialRevision + 1, controller.state.configurationRevision)
+        assertEquals(2, store.configuredModelIdCalls)
+        assertEquals("无法保存 DeepSeek 配置", controller.state.errorMessage)
+        assertSecretIsNotObservable(controller)
+    }
+
+    @Test
+    fun `保存写入后取消仍对账并推进修订`() {
+        val store = FakeStore(
+            configuration = DeepSeekConfiguration("old-model", "saved-secret"),
+            saveFailure = CancellationException("save-cancel-secret"),
+            saveConfigurationBeforeFailure = true,
+        )
+        val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("new-model"))))
+        initialize(controller)
+        val initialRevision = controller.state.configurationRevision
+        controller.verifyAndLoadModels("candidate-secret")
+
+        assertThrows(CancellationException::class.java) {
+            controller.saveVerifiedConfiguration()
+        }
+
+        assertEquals("new-model", controller.state.configuredModelId)
+        assertEquals("new-model", controller.state.selectedModelId)
+        assertEquals(initialRevision + 1, controller.state.configurationRevision)
+        assertEquals(2, store.configuredModelIdCalls)
+        assertNull(controller.state.errorMessage)
         assertSecretIsNotObservable(controller)
     }
 
@@ -365,8 +439,60 @@ class DeepSeekSettingsControllerTest {
 
         assertTrue(failingController.state.hasSavedConfiguration)
         assertEquals("saved", failingController.state.configuredModelId)
-        assertEquals(failingInitialRevision, failingController.state.configurationRevision)
+        assertEquals("saved", failingController.state.selectedModelId)
+        assertEquals(failingInitialRevision + 1, failingController.state.configurationRevision)
         assertEquals("无法清除 DeepSeek 配置", failingController.state.errorMessage)
+    }
+
+    @Test
+    fun `清除元数据后删除密钥失败按未配置对账并推进修订`() {
+        val store = FakeStore(
+            configuration = DeepSeekConfiguration("saved", "saved-secret"),
+            clearFailure = ConfigurationStoreException("无法清除 DeepSeek 配置"),
+            clearConfigurationBeforeFailure = true,
+        )
+        val controller = DeepSeekSettingsController(store, FakeCatalog())
+        initialize(controller)
+        val initialRevision = controller.state.configurationRevision
+
+        controller.clearConfiguration()
+
+        assertFalse(controller.state.hasSavedConfiguration)
+        assertNull(controller.state.configuredModelId)
+        assertNull(controller.state.selectedModelId)
+        assertEquals(initialRevision + 1, controller.state.configurationRevision)
+        assertEquals(2, store.configuredModelIdCalls)
+        assertEquals("无法清除 DeepSeek 配置", controller.state.errorMessage)
+        assertSecretIsNotObservable(controller)
+    }
+
+    @Test
+    fun `失败结果元数据对账不持锁且过期 token 不得回写`() {
+        val store = BlockingFailureReconciliationStore()
+        val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("new-model"))))
+        initialize(controller)
+        controller.verifyAndLoadModels("candidate-secret")
+        val initialRevision = controller.state.configurationRevision
+        val token = controller.beginSaving()!!
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val worker = executor.submit { controller.saveVerifiedConfiguration(token) }
+            assertTrue(store.reconciliationReadEntered.await(1, TimeUnit.SECONDS))
+
+            val lock = controllerLock(controller)
+            assertTrue(lock.tryLock())
+            lock.unlock()
+            controller.cancelPendingOperation(token)
+
+            store.releaseReconciliationRead.countDown()
+            worker.get(1, TimeUnit.SECONDS)
+            assertEquals(initialRevision, controller.state.configurationRevision)
+            assertEquals("old-model", controller.state.configuredModelId)
+            assertNull(controller.state.errorMessage)
+        } finally {
+            store.releaseReconciliationRead.countDown()
+            executor.shutdownNow()
+        }
     }
 
     @Test
@@ -715,16 +841,24 @@ class DeepSeekSettingsControllerTest {
 
     private fun assertSecretIsNotObservable(controller: DeepSeekSettingsController) {
         val observable = controller.state.toString() + controller.state.errorMessage.orEmpty()
-        listOf("candidate-secret", "saved-secret", "internal-secret").forEach { secret ->
+        listOf(
+            "candidate-secret",
+            "saved-secret",
+            "internal-secret",
+            "metadata-secret",
+            "save-cancel-secret",
+        ).forEach { secret ->
             assertFalse(observable.contains(secret))
         }
     }
 
     private class FakeStore(
         private var configuration: DeepSeekConfiguration? = null,
-        private val metadataFailure: Throwable? = null,
+        var metadataFailure: Throwable? = null,
         private val saveFailure: Throwable? = null,
         private val clearFailure: Throwable? = null,
+        private val saveConfigurationBeforeFailure: Boolean = false,
+        private val clearConfigurationBeforeFailure: Boolean = false,
     ) : DeepSeekConfigurationStore {
         var configuredModelIdCalls = 0
         var loadCalls = 0
@@ -745,6 +879,9 @@ class DeepSeekSettingsControllerTest {
 
         override fun save(configuration: DeepSeekConfiguration) {
             saveCalls += 1
+            if (saveConfigurationBeforeFailure) {
+                this.configuration = configuration
+            }
             saveFailure?.let { throw it }
             this.configuration = configuration
             savedConfiguration = configuration
@@ -752,6 +889,9 @@ class DeepSeekSettingsControllerTest {
 
         override fun clear() {
             clearCalls += 1
+            if (clearConfigurationBeforeFailure) {
+                configuration = null
+            }
             clearFailure?.let { throw it }
             configuration = null
         }
@@ -818,6 +958,30 @@ class DeepSeekSettingsControllerTest {
         }
 
         override fun save(configuration: DeepSeekConfiguration) = Unit
+
+        override fun clear() = Unit
+    }
+
+    private class BlockingFailureReconciliationStore : DeepSeekConfigurationStore {
+        val reconciliationReadEntered = CountDownLatch(1)
+        val releaseReconciliationRead = CountDownLatch(1)
+        private var configuredModelIdCalls = 0
+
+        override fun load(): DeepSeekConfiguration? = null
+
+        override fun configuredModelId(): String {
+            configuredModelIdCalls += 1
+            if (configuredModelIdCalls > 1) {
+                reconciliationReadEntered.countDown()
+                check(releaseReconciliationRead.await(1, TimeUnit.SECONDS))
+                return "new-model"
+            }
+            return "old-model"
+        }
+
+        override fun save(configuration: DeepSeekConfiguration) {
+            throw ConfigurationStoreException("无法保存 DeepSeek 配置")
+        }
 
         override fun clear() = Unit
     }

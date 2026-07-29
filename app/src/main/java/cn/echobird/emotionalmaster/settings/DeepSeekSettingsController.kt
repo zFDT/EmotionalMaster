@@ -175,8 +175,14 @@ class DeepSeekSettingsController(
             cancelPendingOperation(token)
             return
         }
+        val configuration = try {
+            DeepSeekConfiguration(request.modelId, request.apiKey)
+        } catch (_: Exception) {
+            saveFailed(token)
+            return
+        }
         try {
-            configurationStore.save(DeepSeekConfiguration(request.modelId, request.apiKey))
+            configurationStore.save(configuration)
             operationLock.withLock {
                 if (!isActiveLocked(token, Operation.SAVING)) return
                 verifiedApiKey = null
@@ -192,10 +198,10 @@ class DeepSeekSettingsController(
                 )
             }
         } catch (exception: CancellationException) {
-            cancelPendingOperation(token)
+            reconcileFailedStorageOperation(token, Operation.SAVING, errorMessage = null)
             throw exception
         } catch (_: Exception) {
-            saveFailed(token)
+            reconcileFailedStorageOperation(token, Operation.SAVING, SAVE_FAILED_MESSAGE)
         }
     }
 
@@ -227,10 +233,10 @@ class DeepSeekSettingsController(
                 )
             }
         } catch (exception: CancellationException) {
-            cancelPendingOperation(token)
+            reconcileFailedStorageOperation(token, Operation.CLEARING, errorMessage = null)
             throw exception
         } catch (_: Exception) {
-            clearFailed(token)
+            reconcileFailedStorageOperation(token, Operation.CLEARING, CLEAR_FAILED_MESSAGE)
         }
     }
 
@@ -351,15 +357,29 @@ class DeepSeekSettingsController(
         }
     }
 
-    private fun clearFailed(token: Long) {
+    private fun reconcileFailedStorageOperation(
+        token: Long,
+        operation: Operation,
+        errorMessage: String?,
+    ) {
+        if (!isActive(token, operation)) return
+        val configuredModelId = try {
+            configurationStore.configuredModelId()
+        } catch (_: Exception) {
+            null
+        }
         operationLock.withLock {
-            if (!isActiveLocked(token, Operation.CLEARING)) return
+            if (!isActiveLocked(token, operation)) return
             verifiedApiKey = null
             activeOperation = null
             state = state.copy(
+                hasSavedConfiguration = configuredModelId != null,
+                configuredModelId = configuredModelId,
+                configurationRevision = state.configurationRevision + 1,
+                selectedModelId = configuredModelId,
                 isLoading = false,
                 canSave = false,
-                errorMessage = CLEAR_FAILED_MESSAGE,
+                errorMessage = errorMessage,
                 success = null,
             )
         }

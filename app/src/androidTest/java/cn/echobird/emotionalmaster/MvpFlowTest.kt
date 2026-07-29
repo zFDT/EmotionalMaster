@@ -481,6 +481,83 @@ class MvpFlowTest {
     }
 
     @Test
+    fun clearPartialFailureRefreshesAndRemovesOnlineProvider() {
+        var savedConfiguration: DeepSeekConfiguration? =
+            DeepSeekConfiguration("deepseek-v4-pro", "old-test-key")
+        val configurationStore = object : DeepSeekConfigurationStore {
+            override fun load(): DeepSeekConfiguration? = savedConfiguration
+
+            override fun configuredModelId(): String? = savedConfiguration?.modelId
+
+            override fun save(configuration: DeepSeekConfiguration) {
+                error("此测试不应保存配置")
+            }
+
+            override fun clear() {
+                savedConfiguration = null
+                throw IllegalStateException("clear-test-failure")
+            }
+        }
+        val controller = DeepSeekSettingsController(
+            configurationStore = configurationStore,
+            modelCatalog = { emptyList() },
+        ).also(DeepSeekSettingsController::initializeMetadata)
+        var settingsState by mutableStateOf(controller.state)
+        var providerResolverCalls = 0
+        val replyViewModel = ReplyViewModel(
+            providerResolver = {
+                providerResolverCalls += 1
+                configurationStore.load()?.let { configuration ->
+                    OnlineReplyProvider(
+                        label = "DeepSeek · ${configuration.modelId}",
+                        service = ReplySuggestionService(
+                            ModelProvider { successfulSuggestions() },
+                        ),
+                    )
+                }
+            },
+        )
+        val importViewModel = ImportViewModel()
+
+        composeRule.setContent {
+            EmotionalMasterTheme {
+                EmotionalMasterFlow(
+                    importViewModel = importViewModel,
+                    analysisViewModel = AnalysisViewModel(),
+                    replyViewModel = replyViewModel,
+                    onChooseDocument = { importViewModel.showPreview(samplePreview()) },
+                    settingsState = settingsState,
+                    onClearDeepSeek = {
+                        controller.clearConfiguration()
+                        settingsState = controller.state
+                    },
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("选择聊天文件").performScrollTo().performClick()
+        composeRule.onNodeWithText("确认导入").performScrollTo().performClick()
+        composeRule.onNodeWithText("获取回复建议").performScrollTo().performClick()
+        composeRule.waitUntil(5_000) {
+            !replyViewModel.uiState.isResolvingOnlineProvider &&
+                replyViewModel.uiState.hasOnlineProvider
+        }
+        val resolverCallsBeforeClear = providerResolverCalls
+        composeRule.onNodeWithText("模型设置").performScrollTo().performClick()
+        composeRule.onNodeWithText("清除已保存配置").performScrollTo().performClick()
+        composeRule.waitUntil(5_000) {
+            providerResolverCalls > resolverCallsBeforeClear &&
+                !replyViewModel.uiState.isResolvingOnlineProvider
+        }
+
+        assertFalse(replyViewModel.uiState.hasOnlineProvider)
+        assertEquals("未配置 DeepSeek", replyViewModel.uiState.providerLabel)
+        assertFalse(settingsState.hasSavedConfiguration)
+        assertEquals(null, settingsState.configuredModelId)
+        assertFalse(settingsState.toString().contains("old-test-key"))
+    }
+
+    @Test
     fun unconfiguredProviderDoesNotCreateOnlineServiceOrLeakFailureSecret() {
         var providerResolverCalls = 0
         val secret = "must-not-leak-secret"
