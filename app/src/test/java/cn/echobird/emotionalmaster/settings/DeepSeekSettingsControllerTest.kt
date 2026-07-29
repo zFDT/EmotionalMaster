@@ -166,6 +166,32 @@ class DeepSeekSettingsControllerTest {
     }
 
     @Test
+    fun `载密临时对象与 controller 字符串表示不暴露密钥`() {
+        val secret = "temporary-marker-secret"
+        val privateValues = listOf(
+            "VerificationSource" to arrayOf<Any>(secret, false),
+            "SaveRequest" to arrayOf<Any>(secret, "model"),
+        ).map { (simpleName, arguments) ->
+            val type = DeepSeekSettingsController::class.java.declaredClasses
+                .single { it.simpleName == simpleName }
+            type.declaredConstructors.single { it.parameterCount == arguments.size }.run {
+                isAccessible = true
+                newInstance(*arguments)
+            }
+        }
+        val controller = DeepSeekSettingsController(
+            FakeStore(),
+            FakeCatalog(models = listOf(model("model"))),
+        )
+        controller.verifyAndLoadModels(secret)
+
+        privateValues.forEach { value ->
+            assertFalse(value.toString().contains(secret))
+        }
+        assertFalse(controller.toString().contains(secret))
+    }
+
+    @Test
     fun `无候选或已保存密钥时提示输入`() {
         val controller = DeepSeekSettingsController(FakeStore(), FakeCatalog())
 
@@ -384,6 +410,31 @@ class DeepSeekSettingsControllerTest {
     }
 
     @Test
+    fun `保存失败后元数据重读取消仍安全对账并传播取消`() {
+        val store = FakeStore(
+            configuration = DeepSeekConfiguration("old-model", "saved-secret"),
+            saveFailure = ConfigurationStoreException("无法保存 DeepSeek 配置"),
+        )
+        val controller = DeepSeekSettingsController(store, FakeCatalog(models = listOf(model("new-model"))))
+        initialize(controller)
+        val initialRevision = controller.state.configurationRevision
+        store.metadataFailure = CancellationException("metadata-cancel-secret")
+        controller.verifyAndLoadModels("candidate-secret")
+
+        assertThrows(CancellationException::class.java) {
+            controller.saveVerifiedConfiguration()
+        }
+
+        assertFalse(controller.state.hasSavedConfiguration)
+        assertNull(controller.state.configuredModelId)
+        assertNull(controller.state.selectedModelId)
+        assertEquals(initialRevision + 1, controller.state.configurationRevision)
+        assertEquals(2, store.configuredModelIdCalls)
+        assertEquals("无法保存 DeepSeek 配置", controller.state.errorMessage)
+        assertSecretIsNotObservable(controller)
+    }
+
+    @Test
     fun `保存写入后取消仍对账并推进修订`() {
         val store = FakeStore(
             configuration = DeepSeekConfiguration("old-model", "saved-secret"),
@@ -456,6 +507,30 @@ class DeepSeekSettingsControllerTest {
         val initialRevision = controller.state.configurationRevision
 
         controller.clearConfiguration()
+
+        assertFalse(controller.state.hasSavedConfiguration)
+        assertNull(controller.state.configuredModelId)
+        assertNull(controller.state.selectedModelId)
+        assertEquals(initialRevision + 1, controller.state.configurationRevision)
+        assertEquals(2, store.configuredModelIdCalls)
+        assertEquals("无法清除 DeepSeek 配置", controller.state.errorMessage)
+        assertSecretIsNotObservable(controller)
+    }
+
+    @Test
+    fun `清除失败后元数据重读取消仍安全对账并传播取消`() {
+        val store = FakeStore(
+            configuration = DeepSeekConfiguration("saved", "saved-secret"),
+            clearFailure = ConfigurationStoreException("无法清除 DeepSeek 配置"),
+        )
+        val controller = DeepSeekSettingsController(store, FakeCatalog())
+        initialize(controller)
+        val initialRevision = controller.state.configurationRevision
+        store.metadataFailure = CancellationException("metadata-cancel-secret")
+
+        assertThrows(CancellationException::class.java) {
+            controller.clearConfiguration()
+        }
 
         assertFalse(controller.state.hasSavedConfiguration)
         assertNull(controller.state.configuredModelId)
@@ -846,7 +921,9 @@ class DeepSeekSettingsControllerTest {
             "saved-secret",
             "internal-secret",
             "metadata-secret",
+            "metadata-cancel-secret",
             "save-cancel-secret",
+            "temporary-marker-secret",
         ).forEach { secret ->
             assertFalse(observable.contains(secret))
         }

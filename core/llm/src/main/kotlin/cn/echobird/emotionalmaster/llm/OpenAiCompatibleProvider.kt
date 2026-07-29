@@ -131,7 +131,7 @@ fun officialDeepSeekReplySuggestionService(
 ): ReplySuggestionService = deepSeekReplySuggestionService(
     apiKeyProvider = apiKeyProvider,
     model = model,
-    endpoint = DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT,
+    endpoint = OFFICIAL_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT,
 )
 
 internal fun officialDeepSeekReplySuggestionService(
@@ -152,7 +152,7 @@ private fun deepSeekReplySuggestionService(
     ),
 )
 
-private const val DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT =
+internal const val OFFICIAL_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT =
     "https://api.deepseek.com/chat/completions"
 
 private class SafeMetadataLoggingInterceptor(

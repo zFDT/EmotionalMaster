@@ -363,26 +363,32 @@ class DeepSeekSettingsController(
         errorMessage: String?,
     ) {
         if (!isActive(token, operation)) return
+        var metadataCancellation: CancellationException? = null
         val configuredModelId = try {
             configurationStore.configuredModelId()
+        } catch (exception: CancellationException) {
+            metadataCancellation = exception
+            null
         } catch (_: Exception) {
             null
         }
         operationLock.withLock {
-            if (!isActiveLocked(token, operation)) return
-            verifiedApiKey = null
-            activeOperation = null
-            state = state.copy(
-                hasSavedConfiguration = configuredModelId != null,
-                configuredModelId = configuredModelId,
-                configurationRevision = state.configurationRevision + 1,
-                selectedModelId = configuredModelId,
-                isLoading = false,
-                canSave = false,
-                errorMessage = errorMessage,
-                success = null,
-            )
+            if (isActiveLocked(token, operation)) {
+                verifiedApiKey = null
+                activeOperation = null
+                state = state.copy(
+                    hasSavedConfiguration = configuredModelId != null,
+                    configuredModelId = configuredModelId,
+                    configurationRevision = state.configurationRevision + 1,
+                    selectedModelId = configuredModelId,
+                    isLoading = false,
+                    canSave = false,
+                    errorMessage = errorMessage,
+                    success = null,
+                )
+            }
         }
+        metadataCancellation?.let { throw it }
     }
 
     private fun discardCandidateLocked(errorMessage: String? = null) {
@@ -405,12 +411,12 @@ class DeepSeekSettingsController(
         var workerClaimed: Boolean = false,
     )
 
-    private data class VerificationSource(
+    private class VerificationSource(
         val candidateApiKey: String?,
         val loadSavedConfiguration: Boolean,
     )
 
-    private data class SaveRequest(
+    private class SaveRequest(
         val apiKey: String,
         val modelId: String,
     )

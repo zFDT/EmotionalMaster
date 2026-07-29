@@ -18,6 +18,28 @@ class OfficialDeepSeekReplyServiceTest {
     }
 
     @Test
+    fun `公开官方工厂固定使用 DeepSeek Chat Completions 地址且不发起请求`() {
+        val service = officialDeepSeekReplySuggestionService(
+            apiKeyProvider = { "unused-test-key" },
+            model = "deepseek-v4-pro",
+        )
+        val provider = ReplySuggestionService::class.java.getDeclaredField("provider").run {
+            isAccessible = true
+            get(service)
+        }
+        val endpoint = OpenAiCompatibleProvider::class.java.getDeclaredField("endpoint").run {
+            isAccessible = true
+            get(provider).toString()
+        }
+
+        assertEquals(
+            "https://api.deepseek.com/chat/completions",
+            OFFICIAL_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT,
+        )
+        assertEquals(OFFICIAL_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT, endpoint)
+    }
+
+    @Test
     fun `官方服务使用选择的模型且不会在可打印对象中暴露密钥`() {
         val requestBody = AtomicReference("")
         val authorization = AtomicReference("")
