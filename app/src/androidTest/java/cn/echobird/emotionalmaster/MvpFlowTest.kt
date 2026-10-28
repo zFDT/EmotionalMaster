@@ -219,6 +219,7 @@ class MvpFlowTest {
         composeRule.onNodeWithText("模型设置").performScrollTo().performClick()
         composeRule.onNodeWithText("DeepSeek 官方服务").assertIsDisplayed()
         composeRule.onNodeWithText("api.deepseek.com").assertIsDisplayed()
+        capture("08-settings-unconfigured")
         composeRule.onNodeWithTag("deepseek-api-key").performTextInput("test-key")
         // 文本 matcher 也会读取原始 InputText；密码安全应断言密码语义与可访问文本遮罩。
         composeRule.onNodeWithTag("deepseek-api-key", useUnmergedTree = true)
@@ -228,6 +229,7 @@ class MvpFlowTest {
         assertEquals("test-key", verifiedApiKey)
         composeRule.onNodeWithText("deepseek-v4-pro").performScrollTo().performClick()
         composeRule.onNodeWithText("deepseek-chat（已弃用）").performScrollTo().assertIsDisplayed()
+        capture("09-settings-models")
         composeRule.onNodeWithText("保存并启用").performScrollTo().performClick()
         assertEquals("deepseek-v4-pro", savedModelId)
         composeRule.waitUntil(
@@ -237,6 +239,7 @@ class MvpFlowTest {
             !replyViewModel.uiState.isResolvingOnlineProvider
         }
         composeRule.onNodeWithText("DeepSeek · deepseek-v4-pro").performScrollTo().assertIsDisplayed()
+        capture("10-reply-configured")
         assertEquals(1, discardCount)
     }
 
@@ -420,8 +423,10 @@ class MvpFlowTest {
         composeRule.onNodeWithText("连接 DeepSeek 超时").assertIsDisplayed()
         composeRule.onNodeWithText("使用本地建议").performScrollTo().assertIsDisplayed()
         composeRule.onAllNodesWithText("复制").assertCountEquals(0)
+        capture("11-online-failure")
         composeRule.onNodeWithText("使用本地建议").performClick()
         composeRule.onAllNodesWithText("复制").assertCountEquals(4)
+        capture("12-online-fallback")
         assertFalse(viewModel.uiState.isGenerating)
         assertFalse(viewModel.uiState.showContextPreview)
         assertEquals(4, viewModel.uiState.suggestions.size)
